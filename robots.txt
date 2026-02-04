@@ -1,0 +1,108 @@
+# robots.txt — Legendary Collectibles / AdapNow style baseline
+# Last updated: 2026-02-03
+
+# -------------------------
+# Global rules (default)
+# -------------------------
+User-agent: *
+Allow: /
+
+# Block sensitive / non-indexable app areas
+Disallow: /admin/
+Disallow: /account/
+Disallow: /profile/
+Disallow: /settings/
+Disallow: /signin/
+Disallow: /sign-in/
+Disallow: /signup/
+Disallow: /sign-up/
+Disallow: /logout/
+Disallow: /signout/
+Disallow: /sign-out/
+
+# Block commerce flows / personal pages
+Disallow: /cart/
+Disallow: /checkout/
+Disallow: /orders/
+Disallow: /order/
+Disallow: /billing/
+Disallow: /payment/
+Disallow: /payments/
+Disallow: /api/
+
+# Block common internal / noisy params paths (optional but helpful)
+Disallow: /_next/
+Disallow: /cdn-cgi/
+
+# Allow important public assets (generally fine even if Disallow: /_next/)
+Allow: /_next/static/
+Allow: /_next/image/
+
+# -------------------------
+# Explicit "good bots" allowances
+# (not strictly required because User-agent:* already allows,
+# but included to be crystal clear)
+# -------------------------
+
+# Google
+User-agent: Googlebot
+Allow: /
+User-agent: Googlebot-Image
+Allow: /
+User-agent: Googlebot-News
+Allow: /
+User-agent: Googlebot-Video
+Allow: /
+
+# Bing / Microsoft
+User-agent: Bingbot
+Allow: /
+User-agent: MicrosoftPreview
+Allow: /
+
+# Apple
+User-agent: Applebot
+Allow: /
+
+# Amazon (includes Amazonbot + other Amazon crawlers)
+User-agent: Amazonbot
+Allow: /
+
+# Moz
+User-agent: rogerbot
+Allow: /
+User-agent: dotbot
+Allow: /
+
+# Ahrefs (SEO tool; optional to allow. Many sites allow with rate limits elsewhere.)
+User-agent: AhrefsBot
+Allow: /
+
+# Semrush (optional)
+User-agent: SemrushBot
+Allow: /
+
+# Majestic (optional)
+User-agent: MJ12bot
+Allow: /
+
+# Yandex (optional)
+User-agent: Yandex
+Allow: /
+
+# Baidu (optional)
+User-agent: Baiduspider
+Allow: /
+
+# -------------------------
+# Crawl-delay (rarely respected; Bing sometimes honors)
+# Set if you ever see crawl pressure.
+# -------------------------
+# User-agent: Bingbot
+# Crawl-delay: 5
+
+# -------------------------
+# Sitemaps
+# -------------------------
+Sitemap: https://adapnow.com/sitemap.xml
+# Sitemap: https://YOURDOMAIN.com/sitemap-0.xml
