@@ -32,5 +32,7 @@ export * from "./reviews";
 
 export * from "./relations";
 
+export * from "./sinaliteProducts";
+
 export * from "./sessions";
 export * from "./uploads";

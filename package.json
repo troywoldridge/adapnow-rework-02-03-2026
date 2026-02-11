@@ -10,7 +10,11 @@
 		"deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
 		"upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
 		"preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-		"cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts"
+		"cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts",
+		"db:migrate:sinalite": "psql $DATABASE_URL -f scripts/migrations/001_sinalite_products.sql",
+		"sinalite:auth": "node scripts/sinaliteAuth.js",
+		"sinalite:ingest": "node scripts/ingestSinaliteProducts.js",
+		"sinalite:ingest:dry": "node scripts/ingestSinaliteProducts.js --dry-run"
 	},
 	"dependencies": {
 		"@opennextjs/cloudflare": "^1.15.1",
