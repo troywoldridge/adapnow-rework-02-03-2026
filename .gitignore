@@ -23,3 +23,15 @@ out/
 
 # misc
 .DS_Store
+
+# --- local package manager caches ---
+.pnpm-store/
+.pnpm-debug.log
+
+# --- node / next caches ---
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+.cache/
