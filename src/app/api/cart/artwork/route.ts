@@ -6,10 +6,8 @@ import { cookies } from "next/headers";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { carts } from "@/lib/db/schema/cart";
-import { cartLines } from "@/lib/db/schema/cart_lines";
-import { cartAttachments } from "@/lib/db/schema/cart_attachments";
-import { cfUrl } from "@/lib/cdn";
+import { carts, cartLines, cartAttachments } from "@/lib/db/schema";
+import { cfUrl } from "@/lib/cf";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -100,15 +98,17 @@ export async function GET(req: NextRequest) {
       rows = await db
         .select()
         .from(cartAttachments)
-        .where(inArray(cartAttachments.lineId, lineIds))
+        .where(inArray(cartAttachments.lineId, lineIds as any))
         .orderBy(desc(cartAttachments.createdAt));
     }
 
     const attachments = rows.map((r: any) => ({
       id: String(r.id),
+      lineId: String(r.lineId),
       storageId: String(r.key),
       url: String(r.url || ensureUrlFromKey(String(r.key))),
       fileName: String(r.fileName || "artwork"),
+      createdAt: r.createdAt ?? null,
     }));
 
     return noStore(NextResponse.json({ ok: true, attachments }, { status: 200 }));
@@ -131,6 +131,7 @@ export async function POST(req: NextRequest) {
 
     const cart = await db.query.carts.findFirst({
       where: and(eq(carts.sid, sid), eq(carts.status, "open")),
+      columns: { id: true },
     });
     if (!cart) return noStore(NextResponse.json({ ok: false, error: "open_cart_not_found" }, { status: 404 }));
 
@@ -155,6 +156,7 @@ export async function POST(req: NextRequest) {
     // Ensure line belongs to sid cart
     const line = await db.query.cartLines.findFirst({
       where: and(eq(cartLines.id, lineId), eq(cartLines.cartId, cart.id)),
+      columns: { id: true, productId: true },
     });
     if (!line) return noStore(NextResponse.json({ ok: false, error: "line_not_found" }, { status: 404 }));
 
@@ -162,27 +164,27 @@ export async function POST(req: NextRequest) {
     const finalUrl = url || ensureUrlFromKey(storageId);
     const fileName = safeFileName(body.fileName, storageId);
 
-    const now = new Date();
-
-    const values: typeof cartAttachments.$inferInsert = {
-      cartId: cart.id,
-      lineId,
-      productId: line.productId,
-      fileName,
-      key: storageId,
-      url: finalUrl,
-      createdAt: now,
-      updatedAt: now,
-    };
-
     const [row] = await db
       .insert(cartAttachments)
-      .values(values)
+      .values({
+        lineId,
+        productId: Number(line.productId),
+        fileName,
+        key: storageId,
+        url: finalUrl,
+        // createdAt/updatedAt handled by defaultNow()
+      })
+      .onConflictDoNothing({
+        target: [cartAttachments.lineId, cartAttachments.key],
+      })
       .returning({ id: cartAttachments.id });
+
+    // If it conflicted, returning() can be empty; still report ok.
+    const id = row?.id ? String(row.id) : null;
 
     return noStore(
       NextResponse.json(
-        { ok: true, attachment: { id: String(row.id), storageId, url: finalUrl, fileName } },
+        { ok: true, attachment: { id, lineId, storageId, url: finalUrl, fileName } },
         { status: 200 },
       ),
     );

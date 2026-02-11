@@ -18,7 +18,8 @@
 		"next": "16.1.5",
 		"pg": "^8.18.0",
 		"react": "19.1.5",
-		"react-dom": "19.1.5"
+		"react-dom": "19.1.5",
+		"svix": "^1.84.1"
 	},
 	"devDependencies": {
 		"@eslint/eslintrc": "^3",

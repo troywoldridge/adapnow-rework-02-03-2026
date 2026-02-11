@@ -2,10 +2,40 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export type PresignResponse =
-  | { url: string; headers?: Record<string, string>; publicUrl: string; key?: string }
-  | { putUrl: string; headers?: Record<string, string>; publicUrl: string; key?: string };
+  | { url: string; headers?: Record<string, string>; publicUrl: string }
+  | { putUrl: string; headers?: Record<string, string>; publicUrl: string };
 
 type AttachArtworkResponse = { ok: boolean; error?: string };
+
+function pickPutUrl(p: PresignResponse): string {
+  const anyP = p as any;
+  const putUrl = String(anyP?.putUrl ?? anyP?.url ?? "").trim();
+  return putUrl;
+}
+
+function pickPublicUrl(p: PresignResponse): string {
+  const anyP = p as any;
+  return String(anyP?.publicUrl ?? "").trim();
+}
+
+function safeText(res: Response): Promise<string> {
+  return res.text().catch(() => "");
+}
+
+function truncate(s: string, max = 300) {
+  const t = String(s ?? "");
+  return t.length <= max ? t : `${t.slice(0, max)}…`;
+}
+
+/** Normalize a user-provided filename into something safe-ish for keys. */
+function safeFilename(name: string): string {
+  const n = String(name ?? "file").trim();
+  // Keep letters, numbers, dot, dash, underscore. Convert spaces to dashes.
+  const cleaned = n
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9._-]/g, "");
+  return cleaned || "file";
+}
 
 export async function presignUpload(opts: {
   filename: string;
@@ -16,21 +46,38 @@ export async function presignUpload(opts: {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      filename: opts.filename,
-      contentType: opts.contentType,
+      filename: safeFilename(opts.filename),
+      contentType: String(opts.contentType || "application/octet-stream"),
       prefix: opts.prefix ?? undefined,
     }),
     cache: "no-store",
   });
+
   if (!res.ok) {
-    const msg = await res.text().catch(() => "");
-    throw new Error(`presign failed: ${res.status} ${msg}`);
+    const msg = await safeText(res);
+    throw new Error(`presign failed: ${res.status} ${truncate(msg)}`);
   }
-  return (await res.json()) as PresignResponse;
+
+  const json = (await res.json().catch(() => null)) as PresignResponse | null;
+  if (!json) throw new Error("presign failed: invalid JSON response");
+
+  const putUrl = pickPutUrl(json);
+  const publicUrl = pickPublicUrl(json);
+  if (!putUrl) throw new Error("presign response missing putUrl/url");
+  if (!publicUrl) throw new Error("presign response missing publicUrl");
+
+  return json;
 }
 
-export async function uploadToR2(putUrl: string, file: File, headers?: Record<string, string>) {
-  const res = await fetch(putUrl, {
+export async function uploadToR2(
+  putUrl: string,
+  file: File,
+  headers?: Record<string, string>
+): Promise<void> {
+  const url = String(putUrl ?? "").trim();
+  if (!url) throw new Error("uploadToR2: missing putUrl");
+
+  const res = await fetch(url, {
     method: "PUT",
     headers: {
       "content-type": file.type || "application/octet-stream",
@@ -38,31 +85,27 @@ export async function uploadToR2(putUrl: string, file: File, headers?: Record<st
     },
     body: file,
   });
+
   if (!res.ok) {
-    const msg = await res.text().catch(() => "");
-    throw new Error(`R2 upload failed: ${res.status} ${msg}`);
+    const msg = await safeText(res);
+    throw new Error(`R2 upload failed: ${res.status} ${truncate(msg)}`);
   }
 }
 
-export async function attachArtworkToLine(args: {
-  lineId: string;
-  side: number | string;
-  publicUrl: string;
-  key?: string;
-  fileName?: string;
-}) {
-  const { lineId, side, publicUrl, key, fileName } = args;
+export async function attachArtworkToLine(
+  lineId: string,
+  side: number | string,
+  publicUrl: string
+): Promise<void> {
+  const lid = String(lineId ?? "").trim();
+  const url = String(publicUrl ?? "").trim();
+  if (!lid) throw new Error("attachArtworkToLine: missing lineId");
+  if (!url) throw new Error("attachArtworkToLine: missing publicUrl");
 
-  const res = await fetch(`/api/cart/lines/${encodeURIComponent(lineId)}/artwork`, {
+  const res = await fetch(`/api/cart/lines/${encodeURIComponent(lid)}/artwork`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    // ✅ send key + fileName so server can store and later delete properly
-    body: JSON.stringify({
-      side: String(side),
-      url: publicUrl,
-      key: key ?? undefined,
-      fileName: fileName ?? undefined,
-    }),
+    body: JSON.stringify({ side: String(side), url }),
     cache: "no-store",
   });
 
@@ -81,31 +124,26 @@ export async function uploadArtwork(params: {
   side: number | string;
   file: File;
   sid?: string; // optional session id; server can infer if omitted
-}) {
+}): Promise<{ publicUrl: string }> {
   const { lineId, side, file, sid } = params;
 
-  const prefix = sid ? `artwork/${sid}/${lineId}` : `artwork/${lineId}`;
+  const lid = String(lineId ?? "").trim();
+  if (!lid) throw new Error("uploadArtwork: missing lineId");
+  if (!(file instanceof File)) throw new Error("uploadArtwork: missing file");
+
+  const prefix = sid ? `artwork/${sid}/${lid}` : `artwork/${lid}`;
+
   const presigned = await presignUpload({
     filename: file.name,
     contentType: file.type || "application/octet-stream",
     prefix,
   });
 
-  const putUrl = (presigned as any).putUrl || (presigned as any).url;
-  if (!putUrl) throw new Error("presign response missing putUrl/url");
+  const putUrl = pickPutUrl(presigned);
+  const publicUrl = pickPublicUrl(presigned);
 
   await uploadToR2(putUrl, file, (presigned as any).headers);
+  await attachArtworkToLine(lid, side, publicUrl);
 
-  // Best effort: key from presign; if absent, server can fall back to url
-  const key = (presigned as any).key as string | undefined;
-
-  await attachArtworkToLine({
-    lineId,
-    side,
-    publicUrl: (presigned as any).publicUrl,
-    key,
-    fileName: file.name,
-  });
-
-  return { publicUrl: (presigned as any).publicUrl, key };
+  return { publicUrl };
 }

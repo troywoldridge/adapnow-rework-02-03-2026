@@ -1,20 +1,22 @@
-// src/app/api/artwork/stage/route.ts
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { artworkStaged } from "@/lib/db/schema/artworkStaged";
+import { artworkStaged } from "@/lib/db/schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function noStore(res: NextResponse) {
-  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-  return res;
+function noStoreHeaders() {
+  return { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" };
+}
+
+function json(status: number, body: unknown) {
+  return NextResponse.json(body, { status, headers: noStoreHeaders() });
 }
 
 // Next 14 (sync) + Next 15 (async)
@@ -37,13 +39,14 @@ function toOptionIds(v: unknown): number[] {
   return v.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
 }
 
-export async function POST(req: NextRequest) {
+async function getSid(): Promise<string> {
   const jar = await getJar();
-  const sid = jar.get?.("sid")?.value ?? jar.get?.("adap_sid")?.value ?? "";
+  return norm(jar.get?.("sid")?.value ?? jar.get?.("adap_sid")?.value ?? "");
+}
 
-  if (!sid) {
-    return noStore(NextResponse.json({ ok: false, error: "no_session" }, { status: 400 }));
-  }
+export async function POST(req: NextRequest) {
+  const sid = await getSid();
+  if (!sid) return json(400, { ok: false, error: "no_session" });
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
@@ -51,64 +54,84 @@ export async function POST(req: NextRequest) {
   const productId = toInt(body.productId, 0);
   const optionIds = toOptionIds(body.optionIds);
   const side = Math.max(1, toInt(body.side, 1));
+
   const key = norm(body.key);
   const url = norm(body.url);
   const fileName = norm(body.fileName) || "artwork";
   const contentType = norm(body.contentType) || null;
 
-  if (!draftId) {
-    return noStore(NextResponse.json({ ok: false, error: "draftId_required" }, { status: 400 }));
-  }
-  if (!productId) {
-    return noStore(NextResponse.json({ ok: false, error: "productId_required" }, { status: 400 }));
-  }
-  if (!key || !url) {
-    return noStore(NextResponse.json({ ok: false, error: "key_and_url_required" }, { status: 400 }));
-  }
+  if (!draftId) return json(400, { ok: false, error: "draftId_required" });
+  if (!productId) return json(400, { ok: false, error: "productId_required" });
+  if (!key || !url) return json(400, { ok: false, error: "key_and_url_required" });
 
-  // Insert staged row
-  await db.insert(artworkStaged).values({
-    sid,
-    draftId,
-    productId,
-    optionIds: optionIds as any,
-    side,
-    fileName,
-    key,
-    url,
-    contentType,
-  } as any);
+  // Upsert on (sid, draft_id, side) so retries replace the staged row.
+  const [row] = await db
+    .insert(artworkStaged)
+    .values({
+      sid,
+      draftId,
+      productId,
+      optionIds: optionIds as any, // jsonb array
+      side,
+      fileName,
+      key,
+      url,
+      contentType,
+    })
+    .onConflictDoUpdate({
+      target: [artworkStaged.sid, artworkStaged.draftId, artworkStaged.side],
+      set: {
+        productId,
+        optionIds: optionIds as any,
+        fileName,
+        key,
+        url,
+        contentType,
+        updatedAt: sql`now()`,
+      },
+    })
+    .returning();
 
-  return noStore(NextResponse.json({ ok: true }, { status: 200 }));
+  return json(200, { ok: true, upload: row });
 }
 
 export async function GET(req: NextRequest) {
-  const jar = await getJar();
-  const sid = jar.get?.("sid")?.value ?? jar.get?.("adap_sid")?.value ?? "";
-  if (!sid) return noStore(NextResponse.json({ ok: false, error: "no_session" }, { status: 400 }));
+  const sid = await getSid();
+  if (!sid) return json(400, { ok: false, error: "no_session" });
 
   const { searchParams } = new URL(req.url);
   const draftId = norm(searchParams.get("draftId"));
-  if (!draftId) return noStore(NextResponse.json({ ok: false, error: "draftId_required" }, { status: 400 }));
+  if (!draftId) return json(400, { ok: false, error: "draftId_required" });
 
-  const rows = await db
+  const uploads = await db
     .select()
     .from(artworkStaged)
-    .where(and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)));
+    .where(and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)))
+    .orderBy(artworkStaged.side);
 
-  return noStore(NextResponse.json({ ok: true, uploads: rows }, { status: 200 }));
+  return json(200, { ok: true, uploads });
 }
 
 export async function DELETE(req: NextRequest) {
-  const jar = await getJar();
-  const sid = jar.get?.("sid")?.value ?? jar.get?.("adap_sid")?.value ?? "";
-  if (!sid) return noStore(NextResponse.json({ ok: false, error: "no_session" }, { status: 400 }));
+  const sid = await getSid();
+  if (!sid) return json(400, { ok: false, error: "no_session" });
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   const draftId = norm(body.draftId);
-  if (!draftId) return noStore(NextResponse.json({ ok: false, error: "draftId_required" }, { status: 400 }));
+  const sideRaw = body.side;
 
-  await db.delete(artworkStaged).where(and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)));
+  if (!draftId) return json(400, { ok: false, error: "draftId_required" });
 
-  return noStore(NextResponse.json({ ok: true }, { status: 200 }));
+  // If side is provided, delete only that side; otherwise delete all for draftId.
+  const side = toInt(sideRaw, 0);
+
+  await db
+    .delete(artworkStaged)
+    .where(
+      side > 0
+        ? and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId), eq(artworkStaged.side, side))
+        : and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)),
+    );
+
+  return json(200, { ok: true });
 }

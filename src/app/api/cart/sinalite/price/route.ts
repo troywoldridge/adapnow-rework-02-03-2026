@@ -1,8 +1,10 @@
-// src/app/cart/sinalite/price/route.ts
+// src/app/api/cart/sinalite/price/route.ts
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
 import { priceSinaliteProduct } from "@/lib/sinalite.pricing";
+import { fetchSinaliteProductOptions } from "@/lib/sinalite.product";
+import { validateOnePerGroup } from "@/lib/sinalite.validateOptions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,12 +15,28 @@ type StoreCode = "US" | "CA";
 type PriceRequestBody = {
   productId: unknown;
   optionIds?: unknown;
+
+  // prefer store, but allow currency too
   store?: unknown;
+  currency?: unknown;
 };
 
-function normStore(v: unknown): StoreCode {
+function noStoreCacheHeaders() {
+  return {
+    "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    pragma: "no-cache",
+    expires: "0",
+  } as const;
+}
+
+function normStore(v: unknown, currency?: unknown): StoreCode {
   const s = String(v ?? "").trim().toUpperCase();
-  return s === "CA" ? "CA" : "US";
+  if (s === "CA") return "CA";
+  if (s === "US") return "US";
+
+  const c = String(currency ?? "").trim().toUpperCase();
+  if (c === "CAD") return "CA";
+  return "US";
 }
 
 function toInt(v: unknown, name: string): number {
@@ -29,11 +47,9 @@ function toInt(v: unknown, name: string): number {
   return m;
 }
 
-function toIntArray(v: unknown, maxLen = 24): number[] {
+function toIntArray(v: unknown, maxLen = 64): number[] {
   if (v == null) return [];
   if (!Array.isArray(v)) throw new Error("optionIds must be an array");
-
-  // keep it sane: prevent accidental 10k option arrays
   if (v.length > maxLen) throw new Error(`optionIds too large (max ${maxLen})`);
 
   const out: number[] = [];
@@ -41,20 +57,10 @@ function toIntArray(v: unknown, maxLen = 24): number[] {
     const n = Number(item);
     if (!Number.isFinite(n)) continue;
     const m = Math.floor(n);
-    if (m < 0) continue;
+    if (m < 1) continue;
     out.push(m);
   }
-
-  // optional: remove duplicates to keep pricing deterministic
   return Array.from(new Set(out));
-}
-
-function noStoreCacheHeaders() {
-  return {
-    "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-    pragma: "no-cache",
-    expires: "0",
-  } as const;
 }
 
 export async function POST(req: NextRequest) {
@@ -63,19 +69,53 @@ export async function POST(req: NextRequest) {
     `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
   try {
-    const body = (await req.json()) as PriceRequestBody;
+    const body = (await req.json().catch(() => ({}))) as PriceRequestBody;
 
     const productId = toInt(body?.productId, "productId");
-    const optionIds = toIntArray(body?.optionIds);
-    const store = normStore(body?.store);
+    const incomingOptionIds = toIntArray(body?.optionIds);
 
+    if (incomingOptionIds.length === 0) {
+      return NextResponse.json(
+        { ok: false, error: "optionIds_required", requestId: reqId },
+        { status: 400, headers: noStoreCacheHeaders() },
+      );
+    }
+
+    const store = normStore(body?.store, body?.currency);
+
+    // ✅ Load option definitions from SinaLite and validate "1 per group"
+    const productOptions = await fetchSinaliteProductOptions({ productId, store });
+
+    const validation = validateOnePerGroup({
+      optionIds: incomingOptionIds,
+      productOptions,
+      // excludeGroups: ["someGroup"] // keep hook for later
+    });
+
+    if (!validation.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: validation.error,
+          details: {
+            requiredGroups: validation.requiredGroups,
+            unknownOptionIds: validation.unknownOptionIds ?? null,
+            missingGroups: validation.missingGroups ?? null,
+            duplicateGroups: validation.duplicateGroups ?? null,
+          },
+          requestId: reqId,
+        },
+        { status: 400, headers: noStoreCacheHeaders() },
+      );
+    }
+
+    // ✅ normalizedOptionIds is now exactly one per required group
     const priced = await priceSinaliteProduct({
       productId,
-      optionIds,
+      optionIds: validation.normalizedOptionIds,
       store,
     });
 
-    // Guard against unexpected return values
     const unitPrice =
       typeof priced?.unitPrice === "number" && Number.isFinite(priced.unitPrice)
         ? priced.unitPrice
@@ -86,21 +126,17 @@ export async function POST(req: NextRequest) {
         ok: true,
         unitPrice,
         meta: priced?.pricingMeta ?? null,
+        normalizedOptionIds: validation.normalizedOptionIds,
+        groupsUsed: validation.groupsUsed,
         requestId: reqId,
       },
       { headers: noStoreCacheHeaders() },
     );
   } catch (e: unknown) {
-    // Keep errors helpful but not leaky
-    const message =
-      e instanceof Error ? e.message : "Failed to price product";
+    const message = e instanceof Error ? e.message : "Failed to price product";
 
     return NextResponse.json(
-      {
-        ok: false,
-        error: message,
-        requestId: reqId,
-      },
+      { ok: false, error: message, requestId: reqId },
       { status: 400, headers: noStoreCacheHeaders() },
     );
   }
