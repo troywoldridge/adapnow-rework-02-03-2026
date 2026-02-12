@@ -3,12 +3,12 @@
 
 import "server-only";
 
+import { getEnv } from "@/lib/env";
 import { getSinaliteAccessToken } from "@/lib/getSinaliteAccessToken";
 
-const BASE =
-  (process.env.SINALITE_API_BASE ?? process.env.SINALITE_BASE_URL ?? "https://api.sinaliteuppy.com")
-    .trim()
-    .replace(/\/+$/, "");
+function getBase(): string {
+  return getEnv().SINALITE_BASE_URL || "https://api.sinaliteuppy.com";
+}
 
 export type PlaceSinaliteOrderResult = {
   orderId: number;
@@ -40,7 +40,7 @@ export async function placeSinaliteOrder(orderData: any): Promise<PlaceSinaliteO
     throw new Error("Missing Sinalite access token (getSinaliteAccessToken returned empty).");
   }
 
-  const url = `${BASE}/order/new`;
+  const url = `${getBase()}/order/new`;
 
   const res = await fetch(url, {
     method: "POST",

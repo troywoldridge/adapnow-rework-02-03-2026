@@ -1,5 +1,7 @@
 // src/lib/sinalite.client-internal.ts
 /**
+ * @deprecated Prefer importing from @/lib/sinalite. This module will be removed in a future version.
+ *
  * Internal (server-only) re-exports for Sinalite client utilities.
  *
  * Keep this file as a stable import target for any modules that need

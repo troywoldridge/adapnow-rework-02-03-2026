@@ -1,5 +1,7 @@
 // src/lib/sinalite.server.ts
 /**
+ * @deprecated Prefer importing from @/lib/sinalite. This module will be removed in a future version.
+ *
  * Canonical Sinalite server utilities (auth wrapper + pricing + shipping + storefront).
  * Uses your existing getSinaliteAccessToken().
  *

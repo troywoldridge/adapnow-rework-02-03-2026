@@ -1,6 +1,7 @@
 // src/lib/sinalite.pricing.ts
 import "server-only";
 
+import { getEnv } from "@/lib/env";
 import { getSinaliteAccessToken } from "@/lib/getSinaliteAccessToken";
 import { optionIdsToSinaOptions } from "@/lib/sinaliteOptionMap";
 import {
@@ -14,7 +15,9 @@ import {
   normalizeOptionGroups,
 } from "@/lib/sinalite.client";
 
-const BASE = process.env.SINALITE_BASE_URL ?? "https://liveapi.sinalite.com";
+function getBase(): string {
+  return getEnv().SINALITE_BASE_URL || "https://liveapi.sinalite.com";
+}
 
 export type PriceResult = {
   unitPrice: number; // dollars
@@ -178,7 +181,7 @@ export async function priceSinaliteProduct(args: {
   }
 
   // 3) Call SinaLite price API
-  const url = `${BASE}/price/${productId}/${storeCode}`;
+  const url = `${getBase()}/price/${productId}/${storeCode}`;
   const payload = { productOptions: options };
 
   const r = await fetchWithTimeout(

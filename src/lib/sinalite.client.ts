@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * @deprecated Prefer importing from @/lib/sinalite. This module will be removed in a future version.
+ */
 
 import "server-only";
 
