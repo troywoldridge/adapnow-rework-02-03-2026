@@ -2,9 +2,11 @@
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { priceSinaliteProduct } from "@/lib/sinalite.pricing";
-import { fetchSinaliteProductOptions } from "@/lib/sinalite.product";
-import { validateOnePerGroup } from "@/lib/sinalite.validateOptions";
+import {
+  priceSinaliteProduct,
+  fetchSinaliteProductOptions,
+  validateOnePerGroup,
+} from "@/lib/sinalite";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
