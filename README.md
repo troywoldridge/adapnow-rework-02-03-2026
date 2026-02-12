@@ -1,6 +1,35 @@
-# OpenNext Starter
+# AdapNow
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Next.js e-commerce app with Sinalite integration, deployed to Cloudflare.
+
+## Database
+
+Schema is managed by [Drizzle ORM](https://orm.drizzle.team/). Source of truth: `src/lib/db/schema/`.
+
+### Migration workflow
+
+1. **Generate migrations** after schema changes:
+   ```bash
+   DATABASE_URL=postgresql://... pnpm db:generate
+   ```
+2. **Apply migrations** (production/preview):
+   ```bash
+   DATABASE_URL=postgresql://... pnpm db:migrate
+   ```
+3. **Push schema directly** (development only – skips migration files):
+   ```bash
+   DATABASE_URL=postgresql://... pnpm db:push
+   ```
+
+> Legacy `scripts/migrations/*.sql` are deprecated; use Drizzle migrations instead.
+
+## Tests
+
+```bash
+pnpm test
+```
+
+Unit and integration tests use [Vitest](https://vitest.dev/). Integration tests mock `server-only`, DB, and Sinalite. For tests requiring a real DB, set `DATABASE_URL` or `TEST_DATABASE_URL`.
 
 ## Getting Started
 

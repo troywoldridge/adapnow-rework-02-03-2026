@@ -1,15 +1,16 @@
 // src/app/api/cart/current/route.ts
 import "server-only";
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/lib/db";
+import { logger, withRequestId } from "@/lib/logger";
+import { getRequestId } from "@/lib/apiError";
 import { carts, cartLines, cartAttachments } from "@/lib/db/schema";
 
-// 🔹 We don't have a products table; load product info from JSON assets
-import productAssets from "@/data/productAssets.json";
+import { getProductsByIds } from "@/lib/productResolver";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,20 +46,6 @@ function toInt(v: unknown, fallback = 0) {
 
 function safeCurrency(v: unknown): "USD" | "CAD" {
   return v === "CAD" ? "CAD" : "USD";
-}
-
-/* =========================================================
-   Product Assets Lookup
-   ========================================================= */
-type ProductAsset = {
-  id: number;
-  name?: string | null;
-  cf_image_1_id?: string | null;
-};
-
-const assetById = new Map<number, ProductAsset>();
-for (const raw of productAssets as ProductAsset[]) {
-  if (raw && typeof raw.id === "number") assetById.set(raw.id, raw);
 }
 
 /* =========================================================
@@ -128,7 +115,10 @@ function emptyEnvelope(currency: "USD" | "CAD" = "USD"): CurrentEnvelope {
 /* =========================================================
    Route
    ========================================================= */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const requestId = getRequestId(req);
+  const log = withRequestId(requestId);
+
   try {
     const jar = await getCookieJar();
     const sid = jar.get(SID_COOKIE)?.value ?? "";
@@ -161,13 +151,16 @@ export async function GET() {
       .from(cartLines)
       .where(eq(cartLines.cartId, openCart.id));
 
+    const productIds = [...new Set((lineRows || []).map((r) => toInt(r.productId, 0)).filter((n) => n > 0))];
+    const productInfo = await getProductsByIds(productIds);
+
     const lines: CurrentCartLine[] = (lineRows || []).map((r) => {
       const pid = toInt(r.productId, 0);
       const qty = Math.max(1, toInt(r.quantity, 1));
-      const asset = assetById.get(pid);
+      const info = productInfo.get(pid);
 
-      const productName = asset?.name ?? null;
-      const productCfImageId = asset?.cf_image_1_id ?? null;
+      const productName = info?.name ?? null;
+      const productCfImageId = info?.cf_image_1_id ?? null;
 
       const unit = typeof r.unitPriceCents === "number" ? r.unitPriceCents : null;
       const total =
@@ -270,7 +263,9 @@ export async function GET() {
 
     return noStore(NextResponse.json(body, { status: 200 }));
   } catch (e) {
-    console.error("/api/cart/current GET error", e);
+    log.error("/api/cart/current GET error", {
+      message: e instanceof Error ? e.message : String(e),
+    });
     // Keep API resilient: return an ok envelope with empty cart for client safety.
     return noStore(NextResponse.json(emptyEnvelope("USD"), { status: 200 }));
   }

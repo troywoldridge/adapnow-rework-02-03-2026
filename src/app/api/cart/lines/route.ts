@@ -2,11 +2,13 @@
 import "server-only";
 
 import crypto from "node:crypto";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { and, eq } from "drizzle-orm";
 
 import { getDb } from "@/lib/db";
+import { jsonError, getRequestId } from "@/lib/apiError";
+import { withRequestId } from "@/lib/logger";
 import { carts, cartLines, cartAttachments, artworkStaged } from "@/lib/db/schema";
 import { computePrice } from "@/lib/price/compute";
 
@@ -48,10 +50,13 @@ function toOptionIds(v: unknown): number[] {
   return v.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const requestId = getRequestId(req);
+  const log = withRequestId(requestId);
   const db = getDb();
 
-  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  try {
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
   const productId = Number(body?.productId);
   const quantity = Math.max(1, Number(body?.quantity ?? body?.qty ?? 1) || 1);
@@ -62,12 +67,12 @@ export async function POST(req: Request) {
   const draftId = norm(body?.draftId) || undefined;
 
   if (!Number.isFinite(productId) || productId <= 0) {
-    return noStore(NextResponse.json({ ok: false, error: "invalid_productId" }, { status: 400 }));
+    return noStore(jsonError(400, "Invalid productId", { code: "invalid_productId", requestId }));
   }
 
   // Pricing/cart logic expects options
   if (optionIds.length === 0) {
-    return noStore(NextResponse.json({ ok: false, error: "missing_optionIds" }, { status: 400 }));
+    return noStore(jsonError(400, "optionIds required", { code: "missing_optionIds", requestId }));
   }
 
   // ✅ Compute server-authoritative pricing
@@ -211,4 +216,10 @@ export async function POST(req: Request) {
   res.cookies.set("sid", sid, COOKIE_OPTS);
 
   return noStore(res);
+  } catch (e) {
+    log.error("/api/cart/lines POST error", {
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return noStore(jsonError(500, "Failed to add cart line", { requestId }));
+  }
 }

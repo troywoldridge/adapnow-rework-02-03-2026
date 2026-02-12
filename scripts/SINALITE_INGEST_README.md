@@ -61,14 +61,16 @@ For DB connection, any of these work: `DATABASE_URL`, `NEON_URL`, `POSTGRES_URL`
 
 ### 1. Run migrations
 
+Sinalite tables are managed by Drizzle. Apply migrations:
+
 ```bash
-psql $DATABASE_URL -f scripts/migrations/001_sinalite_products.sql
+DATABASE_URL=postgresql://... pnpm db:migrate
 ```
 
-Or with explicit URL:
+Or push schema directly (dev only):
 
 ```bash
-psql "postgresql://user:pass@host:5432/db" -f scripts/migrations/001_sinalite_products.sql
+DATABASE_URL=postgresql://... pnpm db:push
 ```
 
 ### 2. Verify auth (optional)

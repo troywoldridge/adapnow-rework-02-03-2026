@@ -7,6 +7,8 @@ import { cookies } from "next/headers";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getR2PublicBaseUrl } from "@/lib/r2Public";
+import { jsonError, getRequestId } from "@/lib/apiError";
+import { withRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -87,14 +89,17 @@ function norm(v: unknown) {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getRequestId(req);
+  const log = withRequestId(requestId);
+
   try {
     const PUBLIC_BASE = getR2PublicBaseUrl(); // throws if invalid
     const { sid } = await readOrCreateSid();
 
     const body = (await req.json().catch(() => null)) as any;
     if (!body) {
-      const res = json({ ok: false, error: "Invalid JSON body" }, 400);
-      setSid(res, sid);
+      const res = jsonError(400, "Invalid JSON body", { code: "invalid_json", requestId });
+      setSid(res as NextResponse, sid);
       return res;
     }
 
@@ -105,8 +110,8 @@ export async function POST(req: NextRequest) {
     const lineId = norm(body.lineId) || ""; // upload-after-cart (optional)
 
     if (!filename) {
-      const res = json({ ok: false, error: "filename required" }, 400);
-      setSid(res, sid);
+      const res = jsonError(400, "filename required", { code: "filename_required", requestId });
+      setSid(res as NextResponse, sid);
       return res;
     }
 
@@ -138,8 +143,9 @@ export async function POST(req: NextRequest) {
     setSid(res, sid);
     return res;
   } catch (err: any) {
-    console.error("[/api/uploads/r2] error:", err?.message || err);
-    return json({ ok: false, error: err?.message || "upload presign error" }, 500);
+    const message = err?.message || "upload presign error";
+    log.error("/api/uploads/r2 error", { message });
+    return jsonError(500, String(message), { requestId });
   }
 }
 

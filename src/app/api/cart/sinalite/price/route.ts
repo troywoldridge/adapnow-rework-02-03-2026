@@ -7,6 +7,8 @@ import {
   fetchSinaliteProductOptions,
   validateOnePerGroup,
 } from "@/lib/sinalite";
+import { jsonError, getRequestId } from "@/lib/apiError";
+import { withRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,9 +68,8 @@ function toIntArray(v: unknown, maxLen = 64): number[] {
 }
 
 export async function POST(req: NextRequest) {
-  const reqId =
-    req.headers.get("x-request-id") ||
-    `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const reqId = getRequestId(req);
+  const log = withRequestId(reqId);
 
   try {
     const body = (await req.json().catch(() => ({}))) as PriceRequestBody;
@@ -77,10 +78,9 @@ export async function POST(req: NextRequest) {
     const incomingOptionIds = toIntArray(body?.optionIds);
 
     if (incomingOptionIds.length === 0) {
-      return NextResponse.json(
-        { ok: false, error: "optionIds_required", requestId: reqId },
-        { status: 400, headers: noStoreCacheHeaders() },
-      );
+      const res = jsonError(400, "optionIds required", { code: "optionIds_required", requestId: reqId });
+      Object.entries(noStoreCacheHeaders()).forEach(([k, v]) => res.headers.set(k, v));
+      return res;
     }
 
     const store = normStore(body?.store, body?.currency);
@@ -95,20 +95,19 @@ export async function POST(req: NextRequest) {
     });
 
     if (!validation.ok) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: validation.error,
-          details: {
-            requiredGroups: validation.requiredGroups,
-            unknownOptionIds: validation.unknownOptionIds ?? null,
-            missingGroups: validation.missingGroups ?? null,
-            duplicateGroups: validation.duplicateGroups ?? null,
-          },
-          requestId: reqId,
+      const body = {
+        ok: false as const,
+        error: validation.error,
+        details: {
+          requiredGroups: validation.requiredGroups,
+          unknownOptionIds: validation.unknownOptionIds ?? null,
+          missingGroups: validation.missingGroups ?? null,
+          duplicateGroups: validation.duplicateGroups ?? null,
         },
-        { status: 400, headers: noStoreCacheHeaders() },
-      );
+        requestId: reqId,
+      };
+      const res = NextResponse.json(body, { status: 400, headers: noStoreCacheHeaders() });
+      return res;
     }
 
     // ✅ normalizedOptionIds is now exactly one per required group
@@ -136,10 +135,10 @@ export async function POST(req: NextRequest) {
     );
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to price product";
-
-    return NextResponse.json(
-      { ok: false, error: message, requestId: reqId },
-      { status: 400, headers: noStoreCacheHeaders() },
-    );
+    const status = e instanceof Error && /must be a number|must be >= 1|optionIds|required/i.test(e.message) ? 400 : 500;
+    log.error("Sinalite price error", { message });
+    const res = jsonError(status, message, { requestId: reqId });
+    Object.entries(noStoreCacheHeaders()).forEach(([k, v]) => res.headers.set(k, v));
+    return res;
   }
 }
