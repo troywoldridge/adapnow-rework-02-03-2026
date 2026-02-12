@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 
 import { customers } from "@/lib/db/schema/customer";
-import { loyaltyWallets, loyaltyTransactions } from "@/lib/db/schema/loyalty";
+import { loyaltyWallets, loyaltyTransactions } from "@/lib/db/schema";
 
 type Db = typeof db;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];

@@ -20,6 +20,7 @@
 		"db:studio": "drizzle-kit studio"
 	},
 	"dependencies": {
+		"@clerk/nextjs": "^6.15.0",
 		"@opennextjs/cloudflare": "^1.15.1",
 		"dotenv": "^17.2.4",
 		"drizzle-orm": "^0.45.1",
@@ -28,6 +29,7 @@
 		"postgres": "^3.4.8",
 		"react": "19.1.5",
 		"react-dom": "19.1.5",
+		"slugify": "^1.6.6",
 		"svix": "^1.84.1"
 	},
 	"devDependencies": {

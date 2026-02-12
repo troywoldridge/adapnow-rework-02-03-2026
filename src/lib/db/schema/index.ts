@@ -5,6 +5,8 @@
 // NOTE: Avoid exporting both artwork_staged.ts and artworkStaged.ts.
 // Pick ONE canonical module to prevent duplicate table definitions / name collisions.
 
+export * from "./addresses";
+
 export * from "./enums";
 export * from "./types";
 
@@ -27,6 +29,8 @@ export * from "./loyalty_transactions";
 export * from "./loyalty_wallets";
 
 export * from "./orders";
+export * from "./orderItems";
+export * from "./orderSessions";
 
 export * from "./price_tiers";
 export * from "./product_reviews";
