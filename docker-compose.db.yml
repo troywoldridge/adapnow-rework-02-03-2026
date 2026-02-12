@@ -1,0 +1,16 @@
+services:
+  postgres_rework:
+    image: postgres:16
+    container_name: adapnow_rework_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: adapnow_rework
+      POSTGRES_USER: adap_rework
+      POSTGRES_PASSWORD: adap_rework_password_change_me
+    ports:
+      - "5433:5432"
+    volumes:
+      - adapnow_rework_pgdata:/var/lib/postgresql/data
+
+volumes:
+  adapnow_rework_pgdata:
