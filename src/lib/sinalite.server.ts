@@ -11,15 +11,10 @@
 
 import "server-only";
 
+import { getEnv } from "@/lib/env";
 import { getSinaliteAccessToken } from "@/lib/getSinaliteAccessToken";
 
-export const API_BASE = (
-  process.env.SINALITE_API_BASE ||
-  process.env.SINALITE_BASE_URL ||
-  "https://api.sinaliteuppy.com" // sandbox default
-)
-  .trim()
-  .replace(/\/+$/, "");
+export const API_BASE = getEnv().SINALITE_BASE_URL || "https://api.sinaliteuppy.com";
 
 /** Per Sinalite: 6 = Canada, 9 = US (legacy numeric code some endpoints use) */
 export function resolveStoreCode(country: "US" | "CA"): 9 | 6 {
@@ -39,8 +34,7 @@ function asBearer(token: string): string {
 }
 
 function resolveStoreString(input?: string | null): string {
-  const envStore = process.env.NEXT_PUBLIC_STORE_CODE?.trim();
-  const sc = (input ?? envStore ?? "").trim();
+  const sc = (input ?? getEnv().NEXT_PUBLIC_STORE_CODE ?? "").trim();
   if (!sc) throw new Error("Missing storeCode (NEXT_PUBLIC_STORE_CODE).");
   return sc;
 }

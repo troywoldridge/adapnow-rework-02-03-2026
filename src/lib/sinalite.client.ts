@@ -2,6 +2,8 @@
 
 import "server-only";
 
+import { getEnv, requireSinaliteAuth } from "@/lib/env";
+
 /**
  * SinaLite REST client (server-only, TypeScript)
  * - Client Credentials auth with token cache
@@ -34,32 +36,15 @@ let _envCache: SinaliteEnv | null = null;
 export function env(): SinaliteEnv {
   if (_envCache) return _envCache;
 
-  const API_BASE =
-    process.env.SINALITE_API_BASE?.trim() ||
-    process.env.SINALITE_BASE_URL?.trim() ||
-    "https://api.sinaliteuppy.com";
-
-  const AUDIENCE =
-    process.env.SINALITE_AUDIENCE?.trim() ||
-    process.env.SINALITE_API_AUDIENCE?.trim() ||
-    "https://apiconnect.sinalite.com";
-
-  const CLIENT_ID = process.env.SINALITE_CLIENT_ID?.trim();
-  const CLIENT_SECRET = process.env.SINALITE_CLIENT_SECRET?.trim();
-  const STORE = process.env.NEXT_PUBLIC_STORE_CODE?.trim() || "en_us";
-
-  if (!API_BASE || !CLIENT_ID || !CLIENT_SECRET || !AUDIENCE) {
-    throw new Error(
-      "Missing SinaLite env vars. Required: SINALITE_API_BASE (or SINALITE_BASE_URL), SINALITE_CLIENT_ID, SINALITE_CLIENT_SECRET, SINALITE_AUDIENCE (or SINALITE_API_AUDIENCE), NEXT_PUBLIC_STORE_CODE"
-    );
-  }
+  const auth = requireSinaliteAuth();
+  const e = getEnv();
 
   _envCache = {
-    API_BASE: API_BASE.replace(/\/+$/, ""),
-    CLIENT_ID,
-    CLIENT_SECRET,
-    AUDIENCE,
-    STORE,
+    API_BASE: e.SINALITE_BASE_URL,
+    CLIENT_ID: auth.clientId,
+    CLIENT_SECRET: auth.clientSecret,
+    AUDIENCE: auth.audience,
+    STORE: e.NEXT_PUBLIC_STORE_CODE,
   };
 
   return _envCache;

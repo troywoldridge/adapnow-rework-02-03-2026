@@ -1,6 +1,8 @@
 // src/lib/getSinaliteAccessToken.ts
 import "server-only";
 
+import { requireSinaliteAuth } from "@/lib/env";
+
 type TokenResponse = {
   access_token: string;
   token_type: string; // usually "Bearer"
@@ -12,10 +14,6 @@ let expiresAt = 0; // epoch ms
 
 function s(v: unknown): string {
   return String(v ?? "").trim();
-}
-
-function env(name: string, fallback = ""): string {
-  return s(process.env[name] ?? fallback);
 }
 
 function clampTtlSeconds(ttl: number): number {
@@ -44,15 +42,9 @@ export async function getSinaliteAccessToken(): Promise<string> {
     return cachedBearer;
   }
 
-  const url = env("SINALITE_AUTH_URL", "https://api.sinaliteuppy.com/auth/token");
-  const client_id = env("SINALITE_CLIENT_ID");
-  const client_secret = env("SINALITE_CLIENT_SECRET");
-  const audience = env("SINALITE_AUDIENCE", "https://apiconnect.sinalite.com");
+  const { url, clientId: client_id, clientSecret: client_secret, audience } =
+    requireSinaliteAuth();
   const grant_type = "client_credentials";
-
-  if (!client_id || !client_secret) {
-    throw new Error("Missing SINALITE_CLIENT_ID / SINALITE_CLIENT_SECRET");
-  }
 
   const res = await fetchJsonWithTimeout(
     url,
