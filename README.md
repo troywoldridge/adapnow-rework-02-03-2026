@@ -62,9 +62,31 @@ npm run preview
 Deploy the application to Cloudflare:
 
 ```bash
-npm run deploy
-# or similar package manager command
+pnpm deploy
 ```
+
+See `.env.example` for required environment variables. Key vars: `DATABASE_URL`, `SINALITE_CLIENT_ID`, `SINALITE_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`.
+
+## Health Check
+
+```
+GET /api/health
+```
+
+Returns 200 when DB is reachable; 503 when DB is down. Optionally checks Sinalite connectivity (`sinalite: "ok" | "skip" | "error"`). Set `LOG_LEVEL` (debug | info | warn | error) to control log verbosity.
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `pnpm dev` | Start dev server |
+| `pnpm build` | Build for production |
+| `pnpm db:generate` | Generate Drizzle migration |
+| `pnpm db:migrate` | Apply migrations |
+| `pnpm db:push` | Push schema (dev only) |
+| `pnpm sinalite:ingest` | Ingest products from Sinalite |
+| `pnpm test` | Run unit/integration tests |
+| `pnpm e2e` | Run Playwright E2E tests (starts dev server) |
 
 ## Learn More
 
