@@ -24,15 +24,15 @@
  *   sinalite_variant_option_map(product_id, store_code, key, option_ids, created_at, updated_at)
  *
  * Usage examples:
- *   node scripts/sinalite/backfillVariants.js --store=CA --concurrency=3
- *   node scripts/sinalite/backfillVariants.js --store=US --productId=1
- *   node scripts/sinalite/backfillVariants.js --store CA --sinceHours 168
+ *   pnpm dotenv -e .env -- node scripts/sinalite/backfillVariants.js --store=CA --concurrency=3
+ *   pnpm dotenv -e .env -- node scripts/sinalite/backfillVariants.js --store=US --productId=1
+ *   pnpm dotenv -e .env -- node scripts/sinalite/backfillVariants.js --store CA --sinceHours 168
  *
  * Safety improvements:
  *   - Detects repeating pages (same set of keys) and stops.
  *   - Detects "no progress" (no new keys observed across pages) and stops.
  *   - Adds maxPages safety fuse to prevent runaway loops.
- *   - Logs received/parsed/affected/newKeys so "upserted 1000" can't lie.
+ *   - Logs received/parsed/affected/newKeys + page signature.
  */
 
 /* eslint-disable no-console */
@@ -91,10 +91,10 @@ function parseArgs(argv) {
     concurrency: 3,
     sinceHours: null,
 
-    // New safety knobs (optional)
-    maxPages: null,          // default handled below
-    stopOnRepeat: true,      // allow override
-    stopOnNoNewKeys: true,   // allow override
+    // Safety knobs
+    maxPages: null,
+    stopOnRepeat: true,
+    stopOnNoNewKeys: true,
   };
 
   const args = argv.slice(2);
@@ -271,7 +271,7 @@ async function apiGetJson(path) {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const timeout = setTimeout(() => controller.abort(), 25_000);
 
     try {
       const res = await fetch(url, {
@@ -299,8 +299,10 @@ async function apiGetJson(path) {
 
       if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
         if (attempt >= MAX_RETRIES) {
+          // ✅ This is where your syntax error was: keep the backticks intact.
           throw new Error(`Sinalite ${res.status} ${res.statusText} @ ${url} (max retries reached)`);
         }
+
         const retryAfterHeader = res.headers.get("Retry-After");
         const retryAfterSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : NaN;
         const delay =
@@ -532,7 +534,6 @@ function chunk(arr, size) {
 }
 
 function pageSignatureFromKeys(keys) {
-  // stable signature: sort and hash (fast enough for 1000 keys)
   const sorted = [...keys].sort();
   return sha1(sorted.join("|"));
 }
@@ -576,7 +577,7 @@ async function upsertVariantsForProduct(pool, productId, storeCode, variantsPage
         totalAffected += r.rowCount || 0;
       }
 
-      // Upsert into sinalite_variant_option_map (only when optionIds parsed)
+      // Upsert into sinalite_variant_option_map
       {
         const mapRows = batch.filter((r) => Array.isArray(r.optionIds) && r.optionIds.length > 0);
         if (mapRows.length) {
@@ -632,16 +633,12 @@ async function processProduct(pool, productId, storeCode, sinceHours, safety) {
   let offset = 0;
   let pages = 0;
 
-  // Progress tracking
   let seenAny = false;
   let totalParsed = 0;
   let totalAffected = 0;
 
-  // Used to detect infinite loops / repeats
   const seenKeys = new Set();
   let lastSig = null;
-  let repeatCount = 0;
-  let noNewKeysStreak = 0;
 
   log("INFO", `Fetching variants for product ${pid} / ${storeCode}`);
 
@@ -650,11 +647,7 @@ async function processProduct(pool, productId, storeCode, sinceHours, safety) {
     pages += 1;
 
     if (safety.maxPages && pages > safety.maxPages) {
-      log(
-        "WARN",
-        `Product ${pid} / ${storeCode}: reached maxPages=${safety.maxPages}; stopping to prevent runaway loop`,
-        { offset, pages }
-      );
+      log("WARN", `Product ${pid} / ${storeCode}: reached maxPages=${safety.maxPages}; stopping`, { offset, pages });
       break;
     }
 
@@ -681,16 +674,14 @@ async function processProduct(pool, productId, storeCode, sinceHours, safety) {
 
     const sig = pageSignatureFromKeys(keys);
 
-    if (safety.stopOnRepeat) {
-      if (lastSig && sig === lastSig) {
-        repeatCount += 1;
-        log(
-          "WARN",
-          `Product ${pid} / ${storeCode}: page signature repeated (repeatCount=${repeatCount}). Likely paging loop; stopping.`,
-          { offset, pageLen: page.length, sig: sig.slice(0, 8) }
-        );
-        break;
-      }
+    if (safety.stopOnRepeat && lastSig && sig === lastSig) {
+      log("WARN", `Product ${pid} / ${storeCode}: repeated page signature; stopping (likely paging loop)`, {
+        offset,
+        pageLen: page.length,
+        sig: sig.slice(0, 8),
+        pages,
+      });
+      break;
     }
 
     let newKeysThisPage = 0;
@@ -701,17 +692,14 @@ async function processProduct(pool, productId, storeCode, sinceHours, safety) {
       }
     }
 
-    if (safety.stopOnNoNewKeys) {
-      if (newKeysThisPage === 0) {
-        noNewKeysStreak += 1;
-        log(
-          "WARN",
-          `Product ${pid} / ${storeCode}: no new keys observed on this page (streak=${noNewKeysStreak}). Likely repeating data; stopping.`,
-          { offset, pageLen: page.length, sig: sig.slice(0, 8) }
-        );
-        break;
-      }
-      noNewKeysStreak = 0;
+    if (safety.stopOnNoNewKeys && newKeysThisPage === 0) {
+      log("WARN", `Product ${pid} / ${storeCode}: no new keys this page; stopping (likely repeating data)`, {
+        offset,
+        pageLen: page.length,
+        sig: sig.slice(0, 8),
+        pages,
+      });
+      break;
     }
 
     try {
@@ -735,7 +723,6 @@ async function processProduct(pool, productId, storeCode, sinceHours, safety) {
     lastSig = sig;
 
     if (page.length < pageSize) break;
-
     offset += pageSize;
   }
 
@@ -744,8 +731,8 @@ async function processProduct(pool, productId, storeCode, sinceHours, safety) {
   }
 
   log("INFO", `Done product ${pid} / ${storeCode}`, {
-    totalReceivedParsed: totalParsed,
-    totalAffectedRows: totalAffected,
+    totalParsed,
+    totalAffected,
     uniqueKeysSeen: seenKeys.size,
     pages,
     lastOffset: offset,
@@ -803,9 +790,8 @@ async function main() {
   const dbUrl = pickEnv("DATABASE_URL");
   if (!dbUrl) throw new Error("DATABASE_URL is not set.");
 
-  // Default safety: enough to cover normal products, prevents runaway loops.
   const safety = {
-    maxPages: args.maxPages || 25_000, // big enough for legit large products, but not infinite
+    maxPages: args.maxPages || 25_000,
     stopOnRepeat: args.stopOnRepeat !== false,
     stopOnNoNewKeys: args.stopOnNoNewKeys !== false,
   };
