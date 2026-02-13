@@ -267,7 +267,39 @@ async function apiGetJson(path) {
       if (attempt >= MAX_RETRIES) throw err;
       log("WARN", `Auth attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}. Retrying in ${delay}ms`);
       await sleep(delay);
-  } ${res.statusText} @ ${url} (max retries reached)`);
+      continue;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          Authorization: bearer,
+          "content-type": "application/json",
+        },
+        signal: controller.signal,
+      });
+
+      const text = await res.text().catch(() => "");
+      clearTimeout(timeout);
+
+      if (res.status === 401 && attempt < MAX_RETRIES) {
+        tokenCache.bearer = null;
+        tokenCache.expiresAtMs = 0;
+        const delay = BASE_DELAY_MS * attempt;
+        log("WARN", `401 from ${url}; refreshing token and retrying in ${delay}ms`);
+        await sleep(delay);
+        continue;
+      }
+
+      if (res.status === 404) return null;
+
+      if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+        if (attempt >= MAX_RETRIES) {
+          throw new Error(`Sinalite ${res.status} ${res.statusText} @ ${url} (max retries reached)`);
         }
         const retryAfterHeader = res.headers.get("Retry-After");
         const retryAfterSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : NaN;
@@ -303,6 +335,7 @@ async function apiGetJson(path) {
 
   return null;
 }
+
 
 // ────────────────────────────────────────────────────────────
 // DB setup and helpers
@@ -580,7 +613,17 @@ async function upsertVariantsForProduct(pool, productId, storeCode, variantsPage
   }
 }
 
-asyncceHours}h), skipping`);
+async function processProduct(pool, productId, storeCode, sinceHours, safety) {
+  const pid = Number(productId);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    log("WARN", `Skipping invalid productId: ${productId}`);
+    return { productId, skipped: true, reason: "invalid_id" };
+  }
+
+  if (sinceHours && sinceHours > 0) {
+    const fresh = await isProductFreshEnough(pool, pid, storeCode, sinceHours);
+    if (fresh) {
+      log("INFO", `Product ${pid} / ${storeCode} is fresh (<= ${sinceHours}h), skipping`);
       return { productId: pid, skipped: true, reason: "fresh" };
     }
   }
@@ -632,7 +675,6 @@ asyncceHours}h), skipping`);
 
     seenAny = true;
 
-    // Extract keys for loop detection (before parsing filters out bad items)
     const keys = page
       .map((it) => (it && typeof it === "object" ? String(it.key || "").trim() : ""))
       .filter(Boolean);
@@ -651,7 +693,6 @@ asyncceHours}h), skipping`);
       }
     }
 
-    // Track if we are seeing new keys at all
     let newKeysThisPage = 0;
     for (const k of keys) {
       if (!seenKeys.has(k)) {
@@ -693,7 +734,6 @@ asyncceHours}h), skipping`);
 
     lastSig = sig;
 
-    // Normal completion condition (still valid when API is well-behaved)
     if (page.length < pageSize) break;
 
     offset += pageSize;
@@ -713,6 +753,7 @@ asyncceHours}h), skipping`);
 
   return { productId: pid, skipped: false, count: totalParsed };
 }
+
 
 // ────────────────────────────────────────────────────────────
 // Concurrency helper
@@ -817,7 +858,26 @@ async function main() {
     log("INFO", `Processing ${productIds.length} product(s) with concurrency=${concurrency}`);
 
     const results = await runWithConcurrency(productIds, concurrency, (pid) =>
-      processProduct(pool, pid, stskippedNoVariants += 1;
+      processProduct(pool, pid, storeCode, args.sinceHours, safety)
+    );
+
+    const summary = {
+      total: productIds.length,
+      processed: 0,
+      skippedFresh: 0,
+      skippedNoVariants: 0,
+      skippedInvalid: 0,
+      fetchErrors: 0,
+      dbErrors: 0,
+      otherSkips: 0,
+    };
+
+    for (const r of results) {
+      if (!r || typeof r !== "object") continue;
+
+      if (r.skipped) {
+        if (r.reason === "fresh") summary.skippedFresh += 1;
+        else if (r.reason === "no_variants") summary.skippedNoVariants += 1;
         else if (r.reason === "invalid_id") summary.skippedInvalid += 1;
         else if (r.reason === "fetch_error") summary.fetchErrors += 1;
         else if (r.reason === "db_error") summary.dbErrors += 1;
