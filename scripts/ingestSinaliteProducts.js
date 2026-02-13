@@ -276,6 +276,10 @@ function detectDetailsType(array1) {
 }
 
 async function inspectSchema(client) {
+  if (!process.env.SINALITE_DEBUG_SCHEMA) {
+    return;
+  }
+
   const tables = await client.query(`
     SELECT table_name
     FROM information_schema.tables
@@ -294,6 +298,7 @@ async function inspectSchema(client) {
     if (!summary[row.table_name]) summary[row.table_name] = [];
     summary[row.table_name].push(`${row.column_name}:${row.data_type}`);
   }
+}
 
   log('INFO', `Schema inspection found ${tables.rowCount} public tables.`);
   for (const table of tables.rows) {

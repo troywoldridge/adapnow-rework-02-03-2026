@@ -20,7 +20,8 @@
 		"db:studio": "drizzle-kit studio",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"e2e": "playwright test"
+		"e2e": "playwright test",
+		"sinalite:variants": "node scripts/captureSinaliteVariants.js"
 	},
 	"dependencies": {
 		"@clerk/nextjs": "^6.15.0",
