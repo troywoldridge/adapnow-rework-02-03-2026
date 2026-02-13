@@ -27,11 +27,18 @@
  *   node scripts/sinalite/backfillVariants.js --store=CA --concurrency=3
  *   node scripts/sinalite/backfillVariants.js --store=US --productId=1
  *   node scripts/sinalite/backfillVariants.js --store CA --sinceHours 168
+ *
+ * Safety improvements:
+ *   - Detects repeating pages (same set of keys) and stops.
+ *   - Detects "no progress" (no new keys observed across pages) and stops.
+ *   - Adds maxPages safety fuse to prevent runaway loops.
+ *   - Logs received/parsed/affected/newKeys so "upserted 1000" can't lie.
  */
 
 /* eslint-disable no-console */
 
 const { Pool } = require("pg");
+const crypto = require("crypto");
 
 // ────────────────────────────────────────────────────────────
 // Small utilities
@@ -68,6 +75,10 @@ function toInt(v, fallback = 0) {
   return Number.isFinite(n) ? Math.floor(n) : fallback;
 }
 
+function sha1(text) {
+  return crypto.createHash("sha1").update(String(text)).digest("hex");
+}
+
 // ────────────────────────────────────────────────────────────
 // CLI args
 // ────────────────────────────────────────────────────────────
@@ -79,6 +90,11 @@ function parseArgs(argv) {
     limit: null,
     concurrency: 3,
     sinceHours: null,
+
+    // New safety knobs (optional)
+    maxPages: null,          // default handled below
+    stopOnRepeat: true,      // allow override
+    stopOnNoNewKeys: true,   // allow override
   };
 
   const args = argv.slice(2);
@@ -129,6 +145,18 @@ function parseArgs(argv) {
     } else if (key.startsWith("--sinceHours=")) {
       const n = Number(vInline);
       if (Number.isFinite(n) && n > 0) out.sinceHours = n;
+    } else if (key === "--maxPages") {
+      const v = nextVal();
+      if (vInline == null) i++;
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) out.maxPages = Math.floor(n);
+    } else if (key.startsWith("--maxPages=")) {
+      const n = Number(vInline);
+      if (Number.isFinite(n) && n > 0) out.maxPages = Math.floor(n);
+    } else if (key === "--noStopOnRepeat") {
+      out.stopOnRepeat = false;
+    } else if (key === "--noStopOnNoNewKeys") {
+      out.stopOnNoNewKeys = false;
     }
   }
 
@@ -239,39 +267,7 @@ async function apiGetJson(path) {
       if (attempt >= MAX_RETRIES) throw err;
       log("WARN", `Auth attempt ${attempt}/${MAX_RETRIES} failed: ${err.message}. Retrying in ${delay}ms`);
       await sleep(delay);
-      continue;
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25_000);
-
-    try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: bearer,
-          "content-type": "application/json",
-        },
-        signal: controller.signal,
-      });
-
-      const text = await res.text().catch(() => "");
-      clearTimeout(timeout);
-
-      if (res.status === 401 && attempt < MAX_RETRIES) {
-        tokenCache.bearer = null;
-        tokenCache.expiresAtMs = 0;
-        const delay = BASE_DELAY_MS * attempt;
-        log("WARN", `401 from ${url}; refreshing token and retrying in ${delay}ms`);
-        await sleep(delay);
-        continue;
-      }
-
-      if (res.status === 404) return null;
-
-      if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
-        if (attempt >= MAX_RETRIES) {
-          throw new Error(`Sinalite ${res.status} ${res.statusText} @ ${url} (max retries reached)`);
+  } ${res.statusText} @ ${url} (max retries reached)`);
         }
         const retryAfterHeader = res.headers.get("Retry-After");
         const retryAfterSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : NaN;
@@ -502,18 +498,24 @@ function chunk(arr, size) {
   return out;
 }
 
+function pageSignatureFromKeys(keys) {
+  // stable signature: sort and hash (fast enough for 1000 keys)
+  const sorted = [...keys].sort();
+  return sha1(sorted.join("|"));
+}
+
 async function upsertVariantsForProduct(pool, productId, storeCode, variantsPage) {
-  if (!variantsPage.length) return { inserted: 0 };
+  if (!variantsPage.length) return { affected: 0, parsed: 0 };
 
   const parsed = variantsPage.map(parseVariantItem).filter(Boolean);
-  if (!parsed.length) return { inserted: 0 };
+  if (!parsed.length) return { affected: 0, parsed: 0 };
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
     const batches = chunk(parsed, 500);
-    let totalUpserted = 0;
+    let totalAffected = 0;
 
     for (const batch of batches) {
       // Upsert into sinalite_product_variants
@@ -537,7 +539,8 @@ async function upsertVariantsForProduct(pool, productId, storeCode, variantsPage
             updated_at = NOW();
         `;
 
-        await client.query(sqlText, params);
+        const r = await client.query(sqlText, params);
+        totalAffected += r.rowCount || 0;
       }
 
       // Upsert into sinalite_variant_option_map (only when optionIds parsed)
@@ -565,12 +568,10 @@ async function upsertVariantsForProduct(pool, productId, storeCode, variantsPage
           await client.query(sqlText, params);
         }
       }
-
-      totalUpserted += batch.length;
     }
 
     await client.query("COMMIT");
-    return { inserted: totalUpserted };
+    return { affected: totalAffected, parsed: parsed.length };
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -579,37 +580,44 @@ async function upsertVariantsForProduct(pool, productId, storeCode, variantsPage
   }
 }
 
-async function processProduct(pool, productId, storeCode, sinceHours) {
-  const pid = Number(productId);
-  if (!Number.isFinite(pid) || pid <= 0) {
-    log("WARN", `Skipping invalid productId: ${productId}`);
-    return { productId, skipped: true, reason: "invalid_id" };
-  }
-
-  if (sinceHours && sinceHours > 0) {
-    const fresh = await isProductFreshEnough(pool, pid, storeCode, sinceHours);
-    if (fresh) {
-      log("INFO", `Product ${pid} / ${storeCode} is fresh (<= ${sinceHours}h), skipping`);
+asyncceHours}h), skipping`);
       return { productId: pid, skipped: true, reason: "fresh" };
     }
   }
 
+  const pageSize = 1000;
+  let offset = 0;
+  let pages = 0;
+
+  // Progress tracking
+  let seenAny = false;
+  let totalParsed = 0;
+  let totalAffected = 0;
+
+  // Used to detect infinite loops / repeats
+  const seenKeys = new Set();
+  let lastSig = null;
+  let repeatCount = 0;
+  let noNewKeysStreak = 0;
+
   log("INFO", `Fetching variants for product ${pid} / ${storeCode}`);
 
-  const pageSize = 1000;
-  let totalInserted = 0;
-  let offset = 0;
-  let seenAny = false;
-
-  // Stream pages to avoid loading thousands of variants into memory at once.
-  // Each page is upserted in its own small transaction with batched INSERTs.
-  // This keeps memory bounded and still restart-safe via ON CONFLICT.
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    pages += 1;
+
+    if (safety.maxPages && pages > safety.maxPages) {
+      log(
+        "WARN",
+        `Product ${pid} / ${storeCode}: reached maxPages=${safety.maxPages}; stopping to prevent runaway loop`,
+        { offset, pages }
+      );
+      break;
+    }
+
     const path = `variants/${pid}/${offset}`;
     let payload;
     try {
-      // API retries/backoff are handled inside apiGetJson
       payload = await apiGetJson(path);
     } catch (err) {
       log("ERROR", `Failed to fetch variants page (offset=${offset}) for product ${pid}: ${err.message}`);
@@ -618,42 +626,92 @@ async function processProduct(pool, productId, storeCode, sinceHours) {
 
     const page = normalizeVariantsResponse(payload);
     if (!Array.isArray(page) || page.length === 0) {
-      if (!seenAny) {
-        log("INFO", `No variants for product ${pid} / ${storeCode}`);
-      }
+      if (!seenAny) log("INFO", `No variants for product ${pid} / ${storeCode}`);
       break;
     }
 
     seenAny = true;
 
+    // Extract keys for loop detection (before parsing filters out bad items)
+    const keys = page
+      .map((it) => (it && typeof it === "object" ? String(it.key || "").trim() : ""))
+      .filter(Boolean);
+
+    const sig = pageSignatureFromKeys(keys);
+
+    if (safety.stopOnRepeat) {
+      if (lastSig && sig === lastSig) {
+        repeatCount += 1;
+        log(
+          "WARN",
+          `Product ${pid} / ${storeCode}: page signature repeated (repeatCount=${repeatCount}). Likely paging loop; stopping.`,
+          { offset, pageLen: page.length, sig: sig.slice(0, 8) }
+        );
+        break;
+      }
+    }
+
+    // Track if we are seeing new keys at all
+    let newKeysThisPage = 0;
+    for (const k of keys) {
+      if (!seenKeys.has(k)) {
+        seenKeys.add(k);
+        newKeysThisPage += 1;
+      }
+    }
+
+    if (safety.stopOnNoNewKeys) {
+      if (newKeysThisPage === 0) {
+        noNewKeysStreak += 1;
+        log(
+          "WARN",
+          `Product ${pid} / ${storeCode}: no new keys observed on this page (streak=${noNewKeysStreak}). Likely repeating data; stopping.`,
+          { offset, pageLen: page.length, sig: sig.slice(0, 8) }
+        );
+        break;
+      }
+      noNewKeysStreak = 0;
+    }
+
     try {
       const res = await upsertVariantsForProduct(pool, pid, storeCode, page);
-      totalInserted += res.inserted;
-      log(
-        "INFO",
-        `Product ${pid} / ${storeCode}: upserted ${res.inserted} variants for page offset=${offset}`
-      );
+      totalParsed += res.parsed;
+      totalAffected += res.affected;
+
+      log("INFO", `Product ${pid} / ${storeCode}: page offset=${offset}`, {
+        received: page.length,
+        parsed: res.parsed,
+        affected: res.affected,
+        newKeys: newKeysThisPage,
+        sig: sig.slice(0, 8),
+        pages,
+      });
     } catch (err) {
-      log(
-        "ERROR",
-        `DB upsert failed for product ${pid} / ${storeCode} at offset=${offset}: ${err.message}`
-      );
+      log("ERROR", `DB upsert failed for product ${pid} / ${storeCode} at offset=${offset}: ${err.message}`);
       return { productId: pid, skipped: true, reason: "db_error" };
     }
 
-    if (page.length < pageSize) {
-      break;
-    }
+    lastSig = sig;
+
+    // Normal completion condition (still valid when API is well-behaved)
+    if (page.length < pageSize) break;
 
     offset += pageSize;
   }
 
-  if (!seenAny || totalInserted === 0) {
+  if (!seenAny || totalParsed === 0) {
     return { productId: pid, skipped: true, reason: "no_variants" };
   }
 
-  log("INFO", `Upserted total ${totalInserted} variants for product ${pid} / ${storeCode}`);
-  return { productId: pid, skipped: false, count: totalInserted };
+  log("INFO", `Done product ${pid} / ${storeCode}`, {
+    totalReceivedParsed: totalParsed,
+    totalAffectedRows: totalAffected,
+    uniqueKeysSeen: seenKeys.size,
+    pages,
+    lastOffset: offset,
+  });
+
+  return { productId: pid, skipped: false, count: totalParsed };
 }
 
 // ────────────────────────────────────────────────────────────
@@ -704,6 +762,13 @@ async function main() {
   const dbUrl = pickEnv("DATABASE_URL");
   if (!dbUrl) throw new Error("DATABASE_URL is not set.");
 
+  // Default safety: enough to cover normal products, prevents runaway loops.
+  const safety = {
+    maxPages: args.maxPages || 25_000, // big enough for legit large products, but not infinite
+    stopOnRepeat: args.stopOnRepeat !== false,
+    stopOnNoNewKeys: args.stopOnNoNewKeys !== false,
+  };
+
   const pool = new Pool({
     connectionString: dbUrl,
     max: Math.max(4, concurrency + 1),
@@ -732,6 +797,7 @@ async function main() {
     productId: args.productId || "all",
     limit: args.limit || "none",
     sinceHours: args.sinceHours || "none",
+    safety,
   });
 
   try {
@@ -751,26 +817,7 @@ async function main() {
     log("INFO", `Processing ${productIds.length} product(s) with concurrency=${concurrency}`);
 
     const results = await runWithConcurrency(productIds, concurrency, (pid) =>
-      processProduct(pool, pid, storeCode, args.sinceHours)
-    );
-
-    const summary = {
-      total: productIds.length,
-      processed: 0,
-      skippedFresh: 0,
-      skippedNoVariants: 0,
-      skippedInvalid: 0,
-      fetchErrors: 0,
-      dbErrors: 0,
-      otherSkips: 0,
-    };
-
-    for (const r of results) {
-      if (!r || typeof r !== "object") continue;
-
-      if (r.skipped) {
-        if (r.reason === "fresh") summary.skippedFresh += 1;
-        else if (r.reason === "no_variants") summary.skippedNoVariants += 1;
+      processProduct(pool, pid, stskippedNoVariants += 1;
         else if (r.reason === "invalid_id") summary.skippedInvalid += 1;
         else if (r.reason === "fetch_error") summary.fetchErrors += 1;
         else if (r.reason === "db_error") summary.dbErrors += 1;
