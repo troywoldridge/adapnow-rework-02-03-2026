@@ -1,579 +1,616 @@
 #!/usr/bin/env node
-/**
- * scripts/ingestSinaliteProducts.js
- *
- * End-to-end ingestion pipeline for Sinalite API → PostgreSQL.
- *
- * 1) Authenticates (client credentials) to get access token
- * 2) Fetches all products from GET /product
- * 3) For each product and store (en_us, en_ca), fetches GET /product/:id/:storeCode
- * 4) Detects regular vs roll label format and upserts into normalized tables
- * 5) Idempotent: uses ON CONFLICT DO UPDATE (no truncation)
- *
- * Required env vars:
- *   DATABASE_URL (or NEON_URL, POSTGRES_URL, PGURL)
- *   SINALITE_CLIENT_ID
- *   SINALITE_CLIENT_SECRET
- *
- * Optional:
- *   SINALITE_API_BASE     (default: https://api.sinaliteuppy.com)
- *   SINALITE_AUTH_URL     (default: https://api.sinaliteuppy.com/auth/token)
- *   SINALITE_AUDIENCE     (default: https://apiconnect.sinalite.com)
- *   SINALITE_STORE_CODES  (default: en_us,en_ca)
- *
- * Usage:
- *   node scripts/ingestSinaliteProducts.js
- *   node scripts/ingestSinaliteProducts.js --limit 5
- *   node scripts/ingestSinaliteProducts.js --productId 7028
- *   node scripts/ingestSinaliteProducts.js --productId 7028 --limit 1
- *   node scripts/ingestSinaliteProducts.js --dry-run
- */
 
-const { Client } = require("pg");
+const dotenv = require('dotenv');
+const { Client } = require('pg');
 
-const DEFAULT_API_BASE = "https://api.sinaliteuppy.com";
-const DEFAULT_AUTH_URL = "https://api.sinaliteuppy.com/auth/token";
-const DEFAULT_AUDIENCE = "https://apiconnect.sinalite.com";
-const DEFAULT_STORE_CODES = ["en_us", "en_ca"];
-const TIMEOUT_MS = 25_000;
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1000;
-const RATE_LIMIT_DELAY_MS = 200;
+dotenv.config();
 
-function pickEnv(...keys) {
-  for (const k of keys) {
-    const v = process.env[k];
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  return null;
+const DEFAULT_API_BASE = 'https://api.sinaliteuppy.com';
+const DEFAULT_AUDIENCE = 'https://apiconnect.sinalite.com';
+const DEFAULT_STORE_CODES = ['en_ca', 'en_us'];
+const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_RETRIES = 5;
+const BASE_DELAY_MS = 800;
+
+const TABLES = {
+  products: 'sinalite_products',
+  options: 'sinalite_product_options',
+  pricing: 'sinalite_product_pricing',
+  metadata: 'sinalite_product_metadata',
+  rollOptions: 'sinalite_roll_label_options',
+  rollExclusions: 'sinalite_roll_label_exclusions',
+  rollContent: 'sinalite_roll_label_content',
+};
+
+const DDL_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS ${TABLES.products} (
+      product_id bigint PRIMARY KEY,
+      sku text,
+      name text,
+      category text,
+      enabled boolean,
+      raw_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW()
+    );`,
+  `CREATE TABLE IF NOT EXISTS ${TABLES.options} (
+      product_id bigint NOT NULL,
+      store_code text NOT NULL,
+      option_id bigint NOT NULL,
+      option_group text,
+      option_name text,
+      raw_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW(),
+      UNIQUE (product_id, store_code, option_id)
+    );`,
+  `CREATE TABLE IF NOT EXISTS ${TABLES.pricing} (
+      product_id bigint NOT NULL,
+      store_code text NOT NULL,
+      hash text NOT NULL,
+      value text,
+      raw_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW(),
+      UNIQUE (product_id, store_code, hash)
+    );`,
+  `CREATE TABLE IF NOT EXISTS ${TABLES.metadata} (
+      product_id bigint NOT NULL,
+      store_code text NOT NULL,
+      metadata_index integer NOT NULL,
+      raw_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW(),
+      UNIQUE (product_id, store_code, metadata_index)
+    );`,
+  `CREATE TABLE IF NOT EXISTS ${TABLES.rollOptions} (
+      product_id bigint NOT NULL,
+      store_code text NOT NULL,
+      option_id bigint,
+      opt_val_id bigint,
+      name text,
+      label text,
+      option_val text,
+      raw_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW(),
+      UNIQUE (product_id, store_code, option_id, opt_val_id)
+    );`,
+  `CREATE TABLE IF NOT EXISTS ${TABLES.rollExclusions} (
+      product_id bigint NOT NULL,
+      store_code text NOT NULL,
+      exclusion_index integer NOT NULL,
+      raw_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW(),
+      UNIQUE (product_id, store_code, exclusion_index)
+    );`,
+  `CREATE TABLE IF NOT EXISTS ${TABLES.rollContent} (
+      product_id bigint NOT NULL,
+      store_code text NOT NULL,
+      content_index integer NOT NULL,
+      pricing_product_option_value_entity_id bigint,
+      content_type text,
+      content text,
+      raw_json jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT NOW(),
+      updated_at timestamptz NOT NULL DEFAULT NOW(),
+      UNIQUE (product_id, store_code, content_index)
+    );`,
+  `CREATE INDEX IF NOT EXISTS idx_sinalite_products_category ON ${TABLES.products}(category);`,
+  `CREATE INDEX IF NOT EXISTS idx_sinalite_product_options_product_store ON ${TABLES.options}(product_id, store_code);`,
+  `CREATE INDEX IF NOT EXISTS idx_sinalite_product_pricing_product_store ON ${TABLES.pricing}(product_id, store_code);`,
+  `CREATE INDEX IF NOT EXISTS idx_sinalite_product_metadata_product_store ON ${TABLES.metadata}(product_id, store_code);`,
+  `CREATE INDEX IF NOT EXISTS idx_sinalite_roll_options_product_store ON ${TABLES.rollOptions}(product_id, store_code);`,
+  `CREATE INDEX IF NOT EXISTS idx_sinalite_roll_exclusions_product_store ON ${TABLES.rollExclusions}(product_id, store_code);`,
+  `CREATE INDEX IF NOT EXISTS idx_sinalite_roll_content_product_store ON ${TABLES.rollContent}(product_id, store_code);`,
+];
+
+function nowIso() {
+  return new Date().toISOString();
 }
 
-function log(level, ...args) {
-  const ts = new Date().toISOString();
-  const prefix = `[${ts}] [${level}]`;
-  console.log(prefix, ...args);
+function log(level, message, data) {
+  if (data !== undefined) {
+    console.log(`[${nowIso()}] [${level}] ${message}`, data);
+    return;
+  }
+  console.log(`[${nowIso()}] [${level}] ${message}`);
 }
 
 function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ─── Auth ───────────────────────────────────────────────────────────────────
-async function getAccessToken() {
-  const url = pickEnv("SINALITE_AUTH_URL") || DEFAULT_AUTH_URL;
-  const client_id = pickEnv("SINALITE_CLIENT_ID");
-  const client_secret = pickEnv("SINALITE_CLIENT_SECRET");
-  const audience = pickEnv("SINALITE_AUDIENCE") || DEFAULT_AUDIENCE;
-  const grant_type = "client_credentials";
-
-  if (!client_id || !client_secret) {
-    throw new Error("Missing SINALITE_CLIENT_ID and/or SINALITE_CLIENT_SECRET");
-  }
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id, client_secret, audience, grant_type }),
-  });
-
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    throw new Error(`Sinalite auth failed: ${res.status} ${res.statusText}${text ? ` - ${text}` : ""}`);
-  }
-
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`Sinalite auth returned non-JSON`);
-  }
-
-  const token = data?.access_token;
-  const type = (data?.token_type || "Bearer").trim();
-  if (!token || typeof token !== "string") {
-    throw new Error("Invalid Sinalite token response (missing access_token)");
-  }
-  return type.toLowerCase().startsWith("bearer") ? `${type} ${token}` : `Bearer ${token}`;
-}
-
-// ─── API fetch with retry + backoff ──────────────────────────────────────────
-async function apiFetch(path, bearer, retries = MAX_RETRIES) {
-  const base = (pickEnv("SINALITE_API_BASE", "SINALITE_BASE_URL") || DEFAULT_API_BASE).replace(
-    /\/+$/,
-    ""
-  );
-  const url = `${base}/${path.replace(/^\//, "")}`;
-
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-
-    try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: bearer,
-          "Content-Type": "application/json",
-        },
-        signal: ctrl.signal,
-      });
-
-      clearTimeout(t);
-
-      if (res.status === 429) {
-        const wait = res.headers.get("Retry-After")
-          ? parseInt(res.headers.get("Retry-After"), 10) * 1000
-          : BASE_DELAY_MS * Math.pow(2, attempt);
-        log("WARN", `Rate limited (429), waiting ${wait}ms before retry ${attempt}/${retries}`);
-        await sleep(wait);
-        continue;
-      }
-
-      const text = await res.text().catch(() => "");
-      if (!res.ok) {
-        if (res.status === 404 && path.includes("/product/")) {
-          return null;
-        }
-        throw new Error(`Sinalite ${res.status} ${res.statusText} @ ${path} - ${text.slice(0, 200)}`);
-      }
-
-      if (!text) return null;
-      return JSON.parse(text);
-    } catch (err) {
-      clearTimeout(t);
-      if (attempt === retries) throw err;
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-      log("WARN", `Attempt ${attempt}/${retries} failed: ${err.message}. Retrying in ${delay}ms`);
-      await sleep(delay);
+function parseArgs(argv) {
+  const args = { dryRun: false, limit: null, productId: null, storeCodes: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (token === '--dry-run') {
+      args.dryRun = true;
+    } else if (token === '--limit' && argv[i + 1]) {
+      args.limit = Number.parseInt(argv[i + 1], 10);
+      i += 1;
+    } else if (token === '--productId' && argv[i + 1]) {
+      args.productId = Number.parseInt(argv[i + 1], 10);
+      i += 1;
+    } else if (token === '--storeCodes' && argv[i + 1]) {
+      args.storeCodes = argv[i + 1]
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      i += 1;
     }
   }
-
-  throw new Error("Max retries exceeded");
+  return args;
 }
 
-// ─── Format detection ────────────────────────────────────────────────────────
-function isRollLabelOption(obj) {
-  if (!obj || typeof obj !== "object") return false;
-  return (
-    "opt_val_id" in obj &&
-    "option_val" in obj &&
-    "option_id" in obj &&
-    "name" in obj
-  );
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value || !value.trim()) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value.trim();
 }
 
-function isRegularOption(obj) {
-  if (!obj || typeof obj !== "object") return false;
-  return "id" in obj && "group" in obj && "name" in obj && !("opt_val_id" in obj);
+function getConfig(args) {
+  const apiBase = (process.env.SINALITE_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, '');
+  return {
+    databaseUrl: requiredEnv('DATABASE_URL'),
+    clientId: requiredEnv('SINALITE_CLIENT_ID'),
+    clientSecret: requiredEnv('SINALITE_CLIENT_SECRET'),
+    apiBase,
+    authUrl: process.env.SINALITE_AUTH_URL || `${apiBase}/auth/token`,
+    audience: process.env.SINALITE_AUDIENCE || DEFAULT_AUDIENCE,
+    storeCodes:
+      args.storeCodes ||
+      (process.env.SINALITE_STORE_CODES || DEFAULT_STORE_CODES.join(','))
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean),
+  };
 }
 
-function detectFormat(arr1) {
-  if (!Array.isArray(arr1) || arr1.length === 0) return "unknown";
-  const first = arr1[0];
-  if (isRollLabelOption(first)) return "roll_label";
-  if (isRegularOption(first)) return "regular";
-  return "unknown";
+async function fetchWithRetry(url, options = {}, retryCount = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= retryCount; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeout);
+      if (response.status === 429 || response.status >= 500) {
+        const retryAfter = response.headers.get('retry-after');
+        const waitMs = retryAfter
+          ? Number.parseInt(retryAfter, 10) * 1000
+          : BASE_DELAY_MS * Math.pow(2, attempt - 1);
+        if (attempt < retryCount) {
+          log('WARN', `Transient ${response.status} for ${url}. Retrying in ${waitMs}ms (${attempt}/${retryCount})`);
+          await sleep(waitMs);
+          continue;
+        }
+      }
+      return response;
+    } catch (error) {
+      clearTimeout(timeout);
+      if (attempt >= retryCount) {
+        throw error;
+      }
+      const waitMs = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      log('WARN', `Request error for ${url}: ${error.message}. Retrying in ${waitMs}ms (${attempt}/${retryCount})`);
+      await sleep(waitMs);
+    }
+  }
+  throw new Error(`Exhausted retries for ${url}`);
 }
 
-// ─── Parse response arrays ───────────────────────────────────────────────────
-function parsePayload(payload) {
-  let arr1 = [];
-  let arr2 = [];
-  let arr3 = [];
+async function getAccessToken(config) {
+  const response = await fetchWithRetry(config.authUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      audience: config.audience,
+      grant_type: 'client_credentials',
+    }),
+  });
 
-  if (Array.isArray(payload)) {
-    arr1 = Array.isArray(payload[0]) ? payload[0] : [];
-    arr2 = Array.isArray(payload[1]) ? payload[1] : [];
-    arr3 = Array.isArray(payload[2]) ? payload[2] : [];
-  } else if (payload && typeof payload === "object") {
-    arr1 = Array.isArray(payload.options) ? payload.options : [];
-    arr2 = Array.isArray(payload.pricing) ? payload.pricing : [];
-    arr3 = Array.isArray(payload.meta) ? payload.meta : [];
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Auth failed (${response.status}): ${text.slice(0, 250)}`);
   }
 
-  return { arr1, arr2, arr3 };
+  const parsed = JSON.parse(text);
+  if (!parsed.access_token) {
+    throw new Error('Auth response missing access_token');
+  }
+  return `Bearer ${parsed.access_token}`;
 }
 
-// ─── Upserts (raw SQL) ───────────────────────────────────────────────────────
-async function upsertProduct(client, product) {
-  const id = product?.id ?? product?.product_id;
-  if (id == null) return;
+async function apiGet(config, token, path, searchParams = null) {
+  const query = searchParams ? `?${new URLSearchParams(searchParams).toString()}` : '';
+  const url = `${config.apiBase}/${path.replace(/^\//, '')}${query}`;
+  const response = await fetchWithRetry(url, {
+    method: 'GET',
+    headers: {
+      Authorization: token,
+      Accept: 'application/json',
+    },
+  });
 
-  const name = product?.name ?? null;
-  const sku = product?.sku ?? null;
-  const raw = JSON.stringify(product ?? {});
+  const bodyText = await response.text();
+  if (response.status === 404) {
+    return null;
+  }
 
-  await client.query(
-    `
-    INSERT INTO sinalite_products (product_id, name, sku, raw_json, updated_at)
-    VALUES ($1, $2, $3, $4::jsonb, NOW())
-    ON CONFLICT (product_id) DO UPDATE SET
-      name = EXCLUDED.name,
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed (${response.status}): ${bodyText.slice(0, 250)}`);
+  }
+
+  if (!bodyText) return null;
+  return JSON.parse(bodyText);
+}
+
+function parseDetailsPayload(payload) {
+  if (Array.isArray(payload)) {
+    return {
+      array1: Array.isArray(payload[0]) ? payload[0] : [],
+      array2: Array.isArray(payload[1]) ? payload[1] : [],
+      array3: Array.isArray(payload[2]) ? payload[2] : [],
+    };
+  }
+
+  const candidateArrays = Object.values(payload || {}).filter(Array.isArray);
+  return {
+    array1: candidateArrays[0] || [],
+    array2: candidateArrays[1] || [],
+    array3: candidateArrays[2] || [],
+  };
+}
+
+function detectDetailsType(array1) {
+  const sample = Array.isArray(array1) ? array1.find((item) => item && typeof item === 'object') : null;
+  if (!sample) return 'regular';
+  if ('opt_val_id' in sample || 'option_val' in sample) return 'roll-label';
+  return 'regular';
+}
+
+async function inspectSchema(client) {
+  const tables = await client.query(`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+    ORDER BY table_name;
+  `);
+  const columns = await client.query(`
+    SELECT table_name, column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+    ORDER BY table_name, ordinal_position;
+  `);
+
+  const summary = {};
+  for (const row of columns.rows) {
+    if (!summary[row.table_name]) summary[row.table_name] = [];
+    summary[row.table_name].push(`${row.column_name}:${row.data_type}`);
+  }
+
+  log('INFO', `Schema inspection found ${tables.rowCount} public tables.`);
+  for (const table of tables.rows) {
+    log('INFO', ` - ${table.table_name}`, summary[table.table_name] || []);
+  }
+}
+
+async function ensureTables(client) {
+  for (const statement of DDL_STATEMENTS) {
+    await client.query(statement);
+  }
+}
+
+function createStats() {
+  const stats = {};
+  Object.values(TABLES).forEach((tableName) => {
+    stats[tableName] = { inserted: 0, updated: 0 };
+  });
+  return stats;
+}
+
+function updateStat(stats, tableName, inserted) {
+  if (inserted) stats[tableName].inserted += 1;
+  else stats[tableName].updated += 1;
+}
+
+async function upsertProduct(client, product, stats) {
+  const result = await client.query(
+    `INSERT INTO ${TABLES.products}
+      (product_id, sku, name, category, enabled, raw_json, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
+     ON CONFLICT (product_id) DO UPDATE SET
       sku = EXCLUDED.sku,
+      name = EXCLUDED.name,
+      category = EXCLUDED.category,
+      enabled = EXCLUDED.enabled,
       raw_json = EXCLUDED.raw_json,
       updated_at = NOW()
-    `,
-    [Number(id), name, sku, raw]
+     RETURNING (xmax = 0) AS inserted;`,
+    [product.id, product.sku ?? null, product.name ?? null, product.category ?? null, product.enabled ?? null, JSON.stringify(product)],
   );
+  updateStat(stats, TABLES.products, result.rows[0].inserted);
 }
 
-async function upsertRegularProduct(client, productId, storeCode, arr1, arr2, arr3) {
-  const pid = Number(productId);
-  const sc = String(storeCode);
+async function clearRegularTables(client, productId, storeCode) {
+  await client.query(`DELETE FROM ${TABLES.options} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
+  await client.query(`DELETE FROM ${TABLES.pricing} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
+  await client.query(`DELETE FROM ${TABLES.metadata} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
+}
 
-  for (const row of arr1 || []) {
-    if (!row || typeof row !== "object" || !("id" in row) || !("group" in row) || !("name" in row))
-      continue;
-    const optionId = Number(row.id);
-    const optionGroup = String(row.group ?? "").trim() || "unknown";
-    const optionName = String(row.name ?? "").trim() || "";
-    const raw = JSON.stringify(row);
+async function clearRollTables(client, productId, storeCode) {
+  await client.query(`DELETE FROM ${TABLES.rollOptions} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
+  await client.query(`DELETE FROM ${TABLES.rollExclusions} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
+  await client.query(`DELETE FROM ${TABLES.rollContent} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
+}
 
-    await client.query(
-      `
-      INSERT INTO sinalite_product_options
+async function ingestRegular(client, productId, storeCode, details, stats) {
+  await clearRegularTables(client, productId, storeCode);
+  await clearRollTables(client, productId, storeCode);
+
+  for (const row of details.array1) {
+    const result = await client.query(
+      `INSERT INTO ${TABLES.options}
         (product_id, store_code, option_id, option_group, option_name, raw_json, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
-      ON CONFLICT (product_id, store_code, option_id) DO UPDATE SET
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
+       ON CONFLICT (product_id, store_code, option_id) DO UPDATE SET
         option_group = EXCLUDED.option_group,
         option_name = EXCLUDED.option_name,
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
-      `,
-      [pid, sc, optionId, optionGroup, optionName, raw]
+       RETURNING (xmax = 0) AS inserted;`,
+      [productId, storeCode, Number(row.id ?? 0), row.group ?? null, row.name ?? null, JSON.stringify(row)],
     );
+    updateStat(stats, TABLES.options, result.rows[0].inserted);
   }
 
-  for (const row of arr2 || []) {
-    if (!row || typeof row !== "object" || !("hash" in row)) continue;
-    const hash = String(row.hash ?? "").trim();
+  for (const row of details.array2) {
+    const hash = row?.hash;
     if (!hash) continue;
-    const value = String(row.value ?? "").trim();
-    const raw = JSON.stringify(row);
-
-    await client.query(
-      `
-      INSERT INTO sinalite_product_pricing
+    const result = await client.query(
+      `INSERT INTO ${TABLES.pricing}
         (product_id, store_code, hash, value, raw_json, updated_at)
-      VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
-      ON CONFLICT (product_id, store_code, hash) DO UPDATE SET
+       VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
+       ON CONFLICT (product_id, store_code, hash) DO UPDATE SET
         value = EXCLUDED.value,
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
-      `,
-      [pid, sc, hash, value, raw]
+       RETURNING (xmax = 0) AS inserted;`,
+      [productId, storeCode, String(hash), row?.value != null ? String(row.value) : null, JSON.stringify(row)],
     );
+    updateStat(stats, TABLES.pricing, result.rows[0].inserted);
   }
 
-  const metaRaw = JSON.stringify(Array.isArray(arr3) ? arr3 : arr3 ? [arr3] : []);
-  await client.query(
-    `
-    INSERT INTO sinalite_product_metadata (product_id, store_code, raw_json, updated_at)
-    VALUES ($1, $2, $3::jsonb, NOW())
-    ON CONFLICT (product_id, store_code) DO UPDATE SET
-      raw_json = EXCLUDED.raw_json,
-      updated_at = NOW()
-    `,
-    [pid, sc, metaRaw]
-  );
+  for (let i = 0; i < details.array3.length; i += 1) {
+    const row = details.array3[i];
+    const result = await client.query(
+      `INSERT INTO ${TABLES.metadata}
+        (product_id, store_code, metadata_index, raw_json, updated_at)
+       VALUES ($1, $2, $3, $4::jsonb, NOW())
+       ON CONFLICT (product_id, store_code, metadata_index) DO UPDATE SET
+        raw_json = EXCLUDED.raw_json,
+        updated_at = NOW()
+       RETURNING (xmax = 0) AS inserted;`,
+      [productId, storeCode, i, JSON.stringify(row)],
+    );
+    updateStat(stats, TABLES.metadata, result.rows[0].inserted);
+  }
 }
 
-async function upsertRollLabelProduct(client, productId, storeCode, arr1, arr2, arr3) {
-  const pid = Number(productId);
-  const sc = String(storeCode);
+async function ingestRollLabel(client, productId, storeCode, details, stats) {
+  await clearRollTables(client, productId, storeCode);
+  await clearRegularTables(client, productId, storeCode);
 
-  for (const row of arr1 || []) {
-    if (!row || typeof row !== "object" || !("opt_val_id" in row) || !("option_id" in row))
-      continue;
-    const optionId = Number(row.option_id);
-    const optValId = Number(row.opt_val_id);
-    const name = String(row.name ?? "").trim() || "unknown";
-    const label = String(row.label ?? row.name ?? "").trim() || name;
-    const optionVal = String(row.option_val ?? "").trim() || "";
-    const htmlType = row.html_type != null ? String(row.html_type) : null;
-    const optSortOrder = row.opt_sort_order != null ? Number(row.opt_sort_order) : null;
-    const optValSortOrder = row.opt_val_sort_order != null ? Number(row.opt_val_sort_order) : null;
-    const imgSrc = row.img_src != null ? String(row.img_src) : null;
-    const extraTurnaroundDays =
-      row.extra_turnaround_days != null ? Number(row.extra_turnaround_days) : null;
-    const raw = JSON.stringify(row);
-
-    await client.query(
-      `
-      INSERT INTO sinalite_roll_label_options (
-        product_id, store_code, option_id, opt_val_id, name, label, option_val,
-        html_type, opt_sort_order, opt_val_sort_order, img_src, extra_turnaround_days, raw_json, updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, NOW())
-      ON CONFLICT (product_id, store_code, option_id, opt_val_id) DO UPDATE SET
+  for (const row of details.array1) {
+    const result = await client.query(
+      `INSERT INTO ${TABLES.rollOptions}
+        (product_id, store_code, option_id, opt_val_id, name, label, option_val, raw_json, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
+       ON CONFLICT (product_id, store_code, option_id, opt_val_id) DO UPDATE SET
         name = EXCLUDED.name,
         label = EXCLUDED.label,
         option_val = EXCLUDED.option_val,
-        html_type = EXCLUDED.html_type,
-        opt_sort_order = EXCLUDED.opt_sort_order,
-        opt_val_sort_order = EXCLUDED.opt_val_sort_order,
-        img_src = EXCLUDED.img_src,
-        extra_turnaround_days = EXCLUDED.extra_turnaround_days,
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
-      `,
+       RETURNING (xmax = 0) AS inserted;`,
       [
-        pid,
-        sc,
-        optionId,
-        optValId,
-        name,
-        label,
-        optionVal,
-        htmlType,
-        optSortOrder,
-        optValSortOrder,
-        imgSrc,
-        extraTurnaroundDays,
-        raw,
-      ]
+        productId,
+        storeCode,
+        row.option_id != null ? Number(row.option_id) : null,
+        row.opt_val_id != null ? Number(row.opt_val_id) : null,
+        row.name ?? null,
+        row.label ?? null,
+        row.option_val ?? null,
+        JSON.stringify(row),
+      ],
     );
+    updateStat(stats, TABLES.rollOptions, result.rows[0].inserted);
   }
 
-  let exclusionId = 0;
-  for (const row of arr2 || []) {
-    if (!row || typeof row !== "object") continue;
-    exclusionId++;
-    const sizeId = row.size_id != null ? Number(row.size_id) : null;
-    const qty = row.qty != null ? Number(row.qty) : null;
-    const e1 = row.pricing_product_option_entity_id_1 != null
-      ? Number(row.pricing_product_option_entity_id_1)
-      : null;
-    const v1 = row.pricing_product_option_value_entity_id_1 != null
-      ? Number(row.pricing_product_option_value_entity_id_1)
-      : null;
-    const e2 = row.pricing_product_option_entity_id_2 != null
-      ? Number(row.pricing_product_option_entity_id_2)
-      : null;
-    const v2 = row.pricing_product_option_value_entity_id_2 != null
-      ? Number(row.pricing_product_option_value_entity_id_2)
-      : null;
-    const raw = JSON.stringify(row);
-
-    await client.query(
-      `
-      INSERT INTO sinalite_roll_label_exclusions (
-        product_id, store_code, exclusion_id, size_id, qty,
-        pricing_product_option_entity_id_1, pricing_product_option_value_entity_id_1,
-        pricing_product_option_entity_id_2, pricing_product_option_value_entity_id_2,
-        raw_json, updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, NOW())
-      ON CONFLICT (product_id, store_code, exclusion_id) DO UPDATE SET
-        size_id = EXCLUDED.size_id,
-        qty = EXCLUDED.qty,
-        pricing_product_option_entity_id_1 = EXCLUDED.pricing_product_option_entity_id_1,
-        pricing_product_option_value_entity_id_1 = EXCLUDED.pricing_product_option_value_entity_id_1,
-        pricing_product_option_entity_id_2 = EXCLUDED.pricing_product_option_entity_id_2,
-        pricing_product_option_value_entity_id_2 = EXCLUDED.pricing_product_option_value_entity_id_2,
+  for (let i = 0; i < details.array2.length; i += 1) {
+    const row = details.array2[i];
+    const result = await client.query(
+      `INSERT INTO ${TABLES.rollExclusions}
+        (product_id, store_code, exclusion_index, raw_json, updated_at)
+       VALUES ($1, $2, $3, $4::jsonb, NOW())
+       ON CONFLICT (product_id, store_code, exclusion_index) DO UPDATE SET
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
-      `,
-      [pid, sc, exclusionId, sizeId, qty, e1, v1, e2, v2, raw]
+       RETURNING (xmax = 0) AS inserted;`,
+      [productId, storeCode, i, JSON.stringify(row)],
     );
+    updateStat(stats, TABLES.rollExclusions, result.rows[0].inserted);
   }
 
-  for (const row of arr3 || []) {
-    if (!row || typeof row !== "object") continue;
-    const valId = row.pricing_product_option_value_entity_id;
-    const contentType = String(row.content_type ?? "unknown").trim() || "unknown";
-    const content = row.content != null ? String(row.content) : null;
-    const raw = JSON.stringify(row);
-
-    if (valId == null) continue;
-
-    await client.query(
-      `
-      INSERT INTO sinalite_roll_label_content (
-        product_id, store_code, pricing_product_option_value_entity_id, content_type, content, raw_json, updated_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW())
-      ON CONFLICT (product_id, store_code, pricing_product_option_value_entity_id, content_type) DO UPDATE SET
+  for (let i = 0; i < details.array3.length; i += 1) {
+    const row = details.array3[i];
+    const result = await client.query(
+      `INSERT INTO ${TABLES.rollContent}
+        (product_id, store_code, content_index, pricing_product_option_value_entity_id, content_type, content, raw_json, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+       ON CONFLICT (product_id, store_code, content_index) DO UPDATE SET
+        pricing_product_option_value_entity_id = EXCLUDED.pricing_product_option_value_entity_id,
+        content_type = EXCLUDED.content_type,
         content = EXCLUDED.content,
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
-      `,
-      [pid, sc, Number(valId), contentType, content, raw]
+       RETURNING (xmax = 0) AS inserted;`,
+      [
+        productId,
+        storeCode,
+        i,
+        row?.pricing_product_option_value_entity_id != null
+          ? Number(row.pricing_product_option_value_entity_id)
+          : null,
+        row?.content_type ?? null,
+        row?.content != null ? String(row.content) : null,
+        JSON.stringify(row),
+      ],
     );
+    updateStat(stats, TABLES.rollContent, result.rows[0].inserted);
   }
 }
 
-// ─── Main ingest logic ───────────────────────────────────────────────────────
-async function main() {
-  const args = process.argv.slice(2);
-  const limitIdx = args.indexOf("--limit");
-  const limit = limitIdx >= 0 && args[limitIdx + 1]
-    ? parseInt(args[limitIdx + 1], 10)
-    : null;
-  const productIdIdx = args.indexOf("--productId");
-  const filterProductId =
-    productIdIdx >= 0 && args[productIdIdx + 1]
-      ? parseInt(args[productIdIdx + 1], 10)
-      : null;
-  const dryRun = args.includes("--dry-run");
+async function fetchProducts(config, token) {
+  const direct = await apiGet(config, token, 'product');
+  if (Array.isArray(direct)) return direct;
+  if (direct?.products && Array.isArray(direct.products)) return direct.products;
 
-  const dbUrl =
-    pickEnv("DATABASE_URL", "NEON_URL", "POSTGRES_URL", "PGURL") || null;
-
-  if (!dbUrl) {
-    log("ERROR", "Missing DATABASE_URL (or NEON_URL / POSTGRES_URL / PGURL)");
-    process.exit(1);
+  if (direct && typeof direct === 'object') {
+    const gathered = [];
+    let page = 1;
+    while (true) {
+      const pageResult = page === 1 ? direct : await apiGet(config, token, 'product', { page, per_page: 100 });
+      const rows = Array.isArray(pageResult)
+        ? pageResult
+        : Array.isArray(pageResult?.products)
+          ? pageResult.products
+          : [];
+      gathered.push(...rows);
+      const hasNext =
+        Number.isFinite(Number(pageResult?.total_pages)) && page < Number(pageResult.total_pages);
+      if (!hasNext || rows.length === 0) break;
+      page += 1;
+    }
+    return gathered;
   }
 
-  const storeCodesRaw = pickEnv("SINALITE_STORE_CODES");
-  const storeCodes = storeCodesRaw
-    ? storeCodesRaw.split(",").map((s) => s.trim()).filter(Boolean)
-    : DEFAULT_STORE_CODES;
+  return [];
+}
 
-  if (dryRun) {
-    log("INFO", "DRY RUN – no DB writes");
-  }
+async function ingest() {
+  const args = parseArgs(process.argv.slice(2));
+  const config = getConfig(args);
+  const start = Date.now();
+  const client = new Client({ connectionString: config.databaseUrl });
+  const stats = createStats();
+  let detailCalls = 0;
+  const failures = [];
 
-  log("INFO", "Starting Sinalite ingestion", {
-    limit: limit ?? "none",
-    productId: filterProductId ?? "all",
-    storeCodes,
-    dryRun,
-  });
-
-  const client = new Client({ connectionString: dbUrl });
   await client.connect();
 
-  let bearer;
   try {
-    bearer = await getAccessToken();
-    log("INFO", "Auth OK");
-  } catch (err) {
-    log("ERROR", "Auth failed:", err.message);
-    process.exit(1);
-  }
+    log('INFO', 'Starting Sinalite ingestion', {
+      dryRun: args.dryRun,
+      limit: args.limit,
+      productId: args.productId,
+      storeCodes: config.storeCodes,
+      apiBase: config.apiBase,
+    });
 
-  let products = [];
-  if (filterProductId) {
-    products = [{ id: filterProductId }];
-    log("INFO", "Filtering to productId", filterProductId);
-  } else {
-    try {
-      const raw = await apiFetch("product", bearer);
-      if (Array.isArray(raw)) {
-        products = raw;
-      } else if (raw && Array.isArray(raw.products)) {
-        products = raw.products;
-      } else if (raw && typeof raw === "object" && "id" in raw) {
-        products = [raw];
-      } else {
-        log(
-          "WARN",
-          "GET /product returned unexpected shape. Trying storefront catalog as fallback..."
-        );
-        const categories = await apiFetch("storefront/en_us/categories", bearer).catch(() => []);
-        const catList = Array.isArray(categories) ? categories : [];
-        for (const cat of catList) {
-          const cid = cat?.id ?? cat?.category_id;
-          if (cid == null) continue;
-          const subs = await apiFetch(
-            `storefront/en_us/categories/${cid}/subcategories`,
-            bearer
-          ).catch(() => []);
-          const subList = Array.isArray(subs) ? subs : [];
-          for (const sub of subList) {
-            const sid = sub?.id ?? sub?.subcategory_id;
-            if (sid == null) continue;
-            const prods = await apiFetch(
-              `storefront/en_us/subcategories/${sid}/products`,
-              bearer
-            ).catch(() => []);
-            const pList = Array.isArray(prods) ? prods : [];
-            for (const p of pList) {
-              const pid = p?.id ?? p?.product_id;
-              if (pid != null && !products.some((x) => (x.id ?? x.product_id) === pid)) {
-                products.push(p);
-              }
+    await inspectSchema(client);
+    if (!args.dryRun) {
+      await ensureTables(client);
+      log('INFO', 'Ensured Sinalite tables and indexes exist.');
+    } else {
+      log('INFO', 'Dry run enabled; skipping DDL and writes.');
+    }
+
+    const token = await getAccessToken(config);
+    log('INFO', 'Obtained access token.');
+
+    let products = await fetchProducts(config, token);
+    if (args.productId) {
+      products = products.filter((p) => Number(p.id) === Number(args.productId));
+      if (!products.length) {
+        products = [{ id: args.productId }];
+      }
+    }
+
+    if (args.limit && args.limit > 0) {
+      products = products.slice(0, args.limit);
+    }
+
+    log('INFO', `Fetched ${products.length} products from /product.`);
+
+    for (const product of products) {
+      const productId = Number(product.id);
+      if (!Number.isFinite(productId)) continue;
+      if (!args.dryRun) {
+        await upsertProduct(client, product, stats);
+      }
+
+      for (const storeCode of config.storeCodes) {
+        const pairStart = Date.now();
+        detailCalls += 1;
+        try {
+          const detailsPayload = await apiGet(config, token, `product/${productId}/${storeCode}`);
+          if (!detailsPayload) {
+            log('WARN', `No detail payload for product=${productId} store=${storeCode}`);
+            continue;
+          }
+
+          const details = parseDetailsPayload(detailsPayload);
+          const kind = detectDetailsType(details.array1);
+
+          if (!args.dryRun) {
+            await client.query('BEGIN');
+            if (kind === 'roll-label') {
+              await ingestRollLabel(client, productId, storeCode, details, stats);
+            } else {
+              await ingestRegular(client, productId, storeCode, details, stats);
             }
+            await client.query('COMMIT');
           }
+
+          log('INFO', `Processed product=${productId} store=${storeCode} kind=${kind} arrays=[${details.array1.length},${details.array2.length},${details.array3.length}] in ${Date.now() - pairStart}ms`);
+        } catch (error) {
+          failures.push({ productId, storeCode, error: error.message });
+          await client.query('ROLLBACK').catch(() => {});
+          log('ERROR', `Failed product=${productId} store=${storeCode}: ${error.message}`);
         }
-        if (products.length === 0) {
-          log("ERROR", "No products found. Check SINALITE_API_BASE and GET /product response shape.");
-          process.exit(1);
-        }
-        log("INFO", "Collected", products.length, "products from storefront catalog");
       }
-    } catch (err) {
-      log("ERROR", "Failed to fetch product list:", err.message);
-      process.exit(1);
     }
-  }
 
-  const toProcess = limit ? products.slice(0, limit) : products;
-  log("INFO", "Processing", toProcess.length, "products");
+    const elapsed = Date.now() - start;
+    log('INFO', `Completed ingestion in ${elapsed}ms.`);
 
-  let processed = 0;
-  let failed = 0;
-  const errors = [];
-
-  for (let i = 0; i < toProcess.length; i++) {
-    const p = toProcess[i];
-    const productId = p?.id ?? p?.product_id ?? p;
-    const pid = Number(productId);
-    if (!Number.isFinite(pid) || pid < 1) continue;
-
-    for (const storeCode of storeCodes) {
-      try {
-        if (!dryRun) {
-          await upsertProduct(client, p);
-        }
-
-        const payload = await apiFetch(`product/${pid}/${storeCode}`, bearer);
-        if (!payload) {
-          log("WARN", `Product ${pid} / ${storeCode}: 404 or empty, skipping`);
-          continue;
-        }
-
-        const { arr1, arr2, arr3 } = parsePayload(payload);
-        const format = detectFormat(arr1);
-
-        if (format === "unknown") {
-          log("WARN", `Product ${pid} / ${storeCode}: unknown format, skipping`);
-          continue;
-        }
-
-        if (!dryRun) {
-          if (format === "regular") {
-            await upsertRegularProduct(client, pid, storeCode, arr1, arr2, arr3);
-          } else {
-            await upsertRollLabelProduct(client, pid, storeCode, arr1, arr2, arr3);
-          }
-        }
-
-        log("INFO", `[${i + 1}/${toProcess.length}] ${pid} / ${storeCode} → ${format}`);
-        processed++;
-      } catch (err) {
-        failed++;
-        const msg = `Product ${pid} / ${storeCode}: ${err.message}`;
-        errors.push(msg);
-        log("ERROR", msg);
+    console.log('\n=== INGESTION SUMMARY ===');
+    console.log(`Products fetched: ${products.length}`);
+    console.log(`Detail calls made: ${detailCalls}`);
+    console.log('Per-table inserted/updated counts:');
+    for (const [tableName, count] of Object.entries(stats)) {
+      console.log(` - ${tableName}: inserted=${count.inserted}, updated=${count.updated}`);
+    }
+    if (failures.length > 0) {
+      console.log('Failures:');
+      for (const failure of failures) {
+        console.log(` - product_id=${failure.productId}, store_code=${failure.storeCode}, error=${failure.error}`);
       }
-
-      await sleep(RATE_LIMIT_DELAY_MS);
+      process.exitCode = 1;
     }
+  } finally {
+    await client.end();
   }
-
-  await client.end();
-
-  log("INFO", "Done. Processed:", processed, "Failed:", failed);
-  if (errors.length) {
-    log("ERROR", "Errors:", errors.join("; "));
-  }
-
-  process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch((e) => {
-  console.error("Fatal error:", e);
+ingest().catch((error) => {
+  console.error(`[${nowIso()}] [FATAL] ${error.message}`);
   process.exit(1);
 });
