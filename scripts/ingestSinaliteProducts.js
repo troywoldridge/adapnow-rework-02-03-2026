@@ -298,6 +298,7 @@ async function inspectSchema(client) {
     if (!summary[row.table_name]) summary[row.table_name] = [];
     summary[row.table_name].push(`${row.column_name}:${row.data_type}`);
   }
+}
 
   log('INFO', `Schema inspection found ${tables.rowCount} public tables.`);
   for (const table of tables.rows) {
