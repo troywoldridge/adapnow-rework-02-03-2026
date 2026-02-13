@@ -276,6 +276,10 @@ function detectDetailsType(array1) {
 }
 
 async function inspectSchema(client) {
+  if (!process.env.SINALITE_DEBUG_SCHEMA) {
+    return;
+  }
+
   const tables = await client.query(`
     SELECT table_name
     FROM information_schema.tables
