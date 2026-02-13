@@ -35,3 +35,10 @@ out/
 dist/
 .turbo/
 .cache/
+
+# Playwright
+/test-results/
+/playwright-report/
+
+# TS build
+tsconfig.tsbuildinfo
