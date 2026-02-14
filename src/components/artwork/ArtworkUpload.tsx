@@ -1,7 +1,8 @@
-// src/components/ArtworkUpload.tsx
+// src/components/artwork/ArtworkUpload.tsx
 "use client";
 
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import type React from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "@/components/ImageSafe";
 
@@ -19,16 +20,32 @@ type UploadResult = {
   error?: string;
   uploadUrl?: string;
   publicUrl?: string; // Cloudflare R2 public (CDN) URL
-  key?: string; // R2 object key / storage id
+  key?: string;
 };
 
 function xhrUploadWithProgress(
   url: string,
   file: File,
   onProgress: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<Response> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+
+    const onAbort = () => {
+      try {
+        xhr.abort();
+      } catch {
+        // ignore
+      }
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
     xhr.open("PUT", url);
     xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
     xhr.upload.onprogress = (evt) => {
@@ -38,9 +55,13 @@ function xhrUploadWithProgress(
     };
     xhr.onload = () => {
       onProgress(100);
+      if (signal) signal.removeEventListener("abort", onAbort);
       resolve(new Response(xhr.response, { status: xhr.status, statusText: xhr.statusText }));
     };
-    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.onerror = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      reject(new Error("Network error"));
+    };
     xhr.send(file);
   });
 }
@@ -50,8 +71,13 @@ function extBadge(name: string) {
   return (m?.[1] || "").toUpperCase();
 }
 
-function isLikelyImage(file: File) {
-  return (file.type || "").toLowerCase().startsWith("image/");
+async function safeJson<T = any>(res: Response): Promise<T | null> {
+  const text = await res.text();
+  try {
+    return text ? (JSON.parse(text) as T) : null;
+  } catch {
+    return null;
+  }
 }
 
 export default function ArtworkUpload({
@@ -92,6 +118,8 @@ export default function ArtworkUpload({
   // toggle once the server save succeeds
   const [canContinue, setCanContinue] = useState(false);
 
+  const abortRef = useRef<AbortController | null>(null);
+
   const sideType: ArtworkFile["type"] = useMemo(() => {
     if (side === 1) return "front";
     if (side === 2) return "back";
@@ -104,28 +132,6 @@ export default function ArtworkUpload({
     if (inputRef.current) inputRef.current.value = "";
   }, []);
 
-  const persistArtworkToLine = useCallback(
-    async (args: { publicUrl: string; key: string; fileName: string }) => {
-      const saveRes = await fetch(`/api/cart/lines/${encodeURIComponent(lineId)}/artwork`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          side,
-          url: args.publicUrl,
-          key: args.key, // ✅ required for clean deletes and consistency
-          fileName: args.fileName,
-        }),
-        cache: "no-store",
-      });
-
-      const saveJson = await saveRes.json().catch(() => ({} as any));
-      if (!saveRes.ok || !saveJson?.ok) {
-        throw new Error(saveJson?.error || `Failed to save artwork: ${saveRes.status}`);
-      }
-    },
-    [lineId, side],
-  );
-
   const handleFiles = useCallback(
     async (file: File) => {
       setError(null);
@@ -133,8 +139,13 @@ export default function ArtworkUpload({
       setProgress(0);
       setCanContinue(false);
 
+      // Cancel any in-flight upload
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+
       try {
-        // 1) Presign to R2 (Cloudflare) — we’ll get PUT URL + public CDN URL + key
+        // 1) Presign to R2 (Cloudflare) — we’ll get PUT URL + public CDN URL
         const presignRes = await fetch("/api/uploads/r2", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -144,32 +155,36 @@ export default function ArtworkUpload({
             cartId,
             lineId,
           }),
-          cache: "no-store",
         });
 
-        const presign: UploadResult = await presignRes.json().catch(() => ({} as any));
+        const presign = (await safeJson<UploadResult>(presignRes)) ?? null;
 
         if (!presignRes.ok || !presign?.ok || !presign.uploadUrl || !presign.publicUrl || !presign.key) {
           throw new Error(presign?.error || `Failed to presign (${presignRes.status})`);
         }
 
         // 2) PUT directly to R2 with progress (no server hop)
-        const put = await xhrUploadWithProgress(presign.uploadUrl, file, (pct) => setProgress(pct));
+        const put = await xhrUploadWithProgress(presign.uploadUrl, file, (pct) => setProgress(pct), ac.signal);
         if (!put.ok) throw new Error(`Upload failed: ${put.status}`);
 
-        // 3) Persist reference to cart line
-        await persistArtworkToLine({
-          publicUrl: presign.publicUrl,
-          key: presign.key,
-          fileName: file.name,
+        const isImage = (file.type || "").startsWith("image/");
+
+        // 3) Persist URL to the cart line (store external URL for Sinalite workflow)
+        const saveRes = await fetch(`/api/cart/lines/${lineId}/artwork`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ side, url: presign.publicUrl }),
+          cache: "no-store",
+          signal: ac.signal,
         });
 
-        const isImage = isLikelyImage(file);
+        const save = (await safeJson<{ ok?: boolean; error?: string }>(saveRes)) ?? null;
+        if (!saveRes.ok || !save?.ok) throw new Error(save?.error || `Failed to save artwork (${saveRes.status})`);
 
         // 4) Local preview + notify
         const fileRec: ArtworkFile = {
           type: sideType,
-          url: presign.publicUrl,
+          url: presign.publicUrl, // served via Cloudflare R2/CDN
           key: presign.key,
           name: file.name,
           isImage,
@@ -183,6 +198,7 @@ export default function ArtworkUpload({
         if (isImage || showContinueEvenIfNotImage) setCanContinue(true);
         else setCanContinue(false);
       } catch (err: any) {
+        if (err?.name === "AbortError") return;
         setError(err?.message ?? "Upload error");
       } finally {
         setBusy(false);
@@ -190,45 +206,33 @@ export default function ArtworkUpload({
         resetInput();
       }
     },
-    [cartId, lineId, onUploaded, persistArtworkToLine, resetInput, showContinueEvenIfNotImage, side, sideType],
+    [cartId, lineId, onUploaded, resetInput, showContinueEvenIfNotImage, side, sideType],
   );
 
-  const onChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const f = e.target.files?.[0];
-      if (f) void handleFiles(f);
-    },
-    [handleFiles],
-  );
+  function onChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (f) handleFiles(f);
+  }
 
-  const onDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setOver(false);
-      const f = e.dataTransfer.files?.[0];
-      if (f) void handleFiles(f);
-    },
-    [handleFiles],
-  );
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setOver(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) handleFiles(f);
+  }
 
-  const onRemove = useCallback(() => {
-    // Best-effort server delete (do not block UI)
-    fetch(`/api/cart/lines/${encodeURIComponent(lineId)}/artwork`, {
+  function onRemove() {
+    // Optional: attempt server delete (best-effort)
+    fetch(`/api/cart/lines/${lineId}/artwork`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        side,
-        key: preview?.key ?? undefined, // ✅ preferred identifier
-        url: preview?.url ?? undefined, // fallback if key missing
-      }),
-      cache: "no-store",
+      body: JSON.stringify({ side, key: preview?.key }),
     }).catch(() => {});
-
     setPreview(null);
     onUploaded?.(null);
     setCanContinue(false);
-  }, [lineId, onUploaded, preview?.key, preview?.url, side]);
+  }
 
   const ContinueCta = () =>
     canContinue ? (
@@ -271,6 +275,7 @@ export default function ArtworkUpload({
             <div className="break-words font-semibold text-slate-900">{preview.name}</div>
             <div className="flex gap-2">
               <button
+                type="button"
                 onClick={pick}
                 disabled={busy}
                 className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50 disabled:opacity-60"
@@ -278,6 +283,7 @@ export default function ArtworkUpload({
                 Replace
               </button>
               <button
+                type="button"
                 onClick={onRemove}
                 disabled={busy}
                 className="inline-flex items-center rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100 disabled:opacity-60"
@@ -317,10 +323,7 @@ export default function ArtworkUpload({
 
           {progress > 0 && (
             <div className="absolute bottom-0 left-0 right-0 h-1 overflow-hidden rounded-b-xl bg-slate-200">
-              <div
-                className="h-full bg-blue-500 transition-[width] duration-200 ease-linear"
-                style={{ width: `${progress}%` }}
-              />
+              <div className="h-full bg-blue-500 transition-[width] duration-200 ease-linear" style={{ width: `${progress}%` }} />
             </div>
           )}
         </div>
@@ -342,9 +345,7 @@ export default function ArtworkUpload({
         >
           Setup guides &amp; templates →
         </Link>
-        <span className="text-xs text-slate-500">
-          Accepted: PDF, AI, EPS, PNG, JPG, TIFF • Cloudflare R2/CDN
-        </span>
+        <span className="text-xs text-slate-500">Accepted: PDF, AI, EPS, PNG, JPG, TIFF • Cloudflare R2/CDN</span>
       </div>
 
       {/* Continue CTA (appears once saved) */}

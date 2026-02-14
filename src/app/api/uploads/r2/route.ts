@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { getR2PublicBaseUrl } from "@/lib/r2Public";
+import { getR2PublicBaseUrl } from "@/lib/artwork/r2Public";
 import { jsonError, getRequestId } from "@/lib/apiError";
 import { withRequestId } from "@/lib/logger";
 

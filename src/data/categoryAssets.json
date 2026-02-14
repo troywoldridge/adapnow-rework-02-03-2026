@@ -1,1 +1,66 @@
-[]
+[
+  {
+    "id": 7,
+    "slug": "apparel",
+    "name": "Apparel",
+    "cf_image_id": "99ad0bd5-c9a5-402c-6e21-c25725a0ae00",
+    "sort_order": 7,
+    "qa_has_image": true
+  },
+  {
+    "id": 1,
+    "slug": "business-cards",
+    "name": "Business Cards",
+    "cf_image_id": "4c9cd804-69dd-4c96-d0dd-97d84e737700",
+    "sort_order": 1,
+    "qa_has_image": true
+  },
+  {
+    "id": 4,
+    "slug": "labels-and-packaging",
+    "name": "Labels and Packaging",
+    "cf_image_id": "a47c493f-3db5-47a6-1189-71ede6d8ae00",
+    "sort_order": 5,
+    "qa_has_image": true
+  },
+  {
+    "id": 3,
+    "slug": "large-format",
+    "name": "Large Format",
+    "cf_image_id": "a4ab5b6b-75e5-43d8-9e5d-a7efd3c5c700",
+    "sort_order": 3,
+    "qa_has_image": true
+  },
+  {
+    "id": 2,
+    "slug": "print-products",
+    "name": "Print Products",
+    "cf_image_id": "a71a8deb-f214-4fe1-7384-e7c8c9963b00",
+    "sort_order": 2,
+    "qa_has_image": true
+  },
+  {
+    "id": 5,
+    "slug": "promotional",
+    "name": "Promotional",
+    "cf_image_id": "a0dc92ef-e2b1-4a36-b38f-8cc47963dd00",
+    "sort_order": 6,
+    "qa_has_image": true
+  },
+  {
+    "id": 8,
+    "slug": "sample-kits",
+    "name": "Sample Kits",
+    "cf_image_id": "9ae9ade7-8f73-4be6-683b-31c69c218600",
+    "sort_order": 8,
+    "qa_has_image": true
+  },
+  {
+    "id": 6,
+    "slug": "stationery",
+    "name": "Stationery",
+    "cf_image_id": "e17df918-222f-4974-a562-822944061b00",
+    "sort_order": 4,
+    "qa_has_image": true
+  }
+]

@@ -1,45 +1,57 @@
 // src/lib/apiError.ts
-// Consistent API error responses with optional requestId.
+import "server-only";
 
-import { NextResponse } from "next/server";
-
-const NO_STORE_HEADERS = {
-  "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
-  "content-type": "application/json; charset=utf-8",
-} as const;
+import { NextRequest, NextResponse } from "next/server";
 
 export type ApiErrorBody = {
   ok: false;
   error: string;
   code?: string;
   requestId?: string;
+  // allow additional fields when needed (productId, storeCode, etc.)
+  [key: string]: unknown;
 };
 
 /**
- * Build a standard JSON error response.
+ * Try to get a stable request ID:
+ * - Prefer incoming headers (reverse proxy / client)
+ * - Otherwise generate a lightweight random id
+ */
+export function getRequestId(req: NextRequest): string {
+  const hdr =
+    req.headers.get("x-request-id") ||
+    req.headers.get("x-amzn-trace-id") ||
+    req.headers.get("cf-ray") ||
+    req.headers.get("x-vercel-id");
+
+  if (hdr && hdr.trim()) return hdr.trim();
+
+  // node runtime: use crypto.randomUUID when available
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const crypto = require("crypto") as typeof import("crypto");
+    if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  } catch {
+    // ignore
+  }
+
+  // fallback: timestamp + random
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Standard JSON error response helper.
+ * `extra` can include any additional fields you want (productId, storeCode, details, etc.)
  */
 export function jsonError(
   status: number,
   message: string,
-  options?: { code?: string; requestId?: string }
+  extra: Omit<ApiErrorBody, "ok" | "error"> = {},
 ): NextResponse<ApiErrorBody> {
   const body: ApiErrorBody = {
     ok: false,
     error: message,
-    ...(options?.code && { code: options.code }),
-    ...(options?.requestId && { requestId: options.requestId }),
+    ...extra,
   };
-  return new NextResponse(JSON.stringify(body), {
-    status,
-    headers: NO_STORE_HEADERS,
-  });
-}
-
-/** Generate a request ID from header or random. */
-export function getRequestId(req: { headers?: { get?: (name: string) => string | null } }): string {
-  const fromHeader = req?.headers?.get?.("x-request-id");
-  if (fromHeader && typeof fromHeader === "string" && fromHeader.trim()) {
-    return fromHeader.trim();
-  }
-  return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return NextResponse.json(body, { status });
 }

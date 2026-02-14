@@ -1,25 +1,49 @@
 #!/usr/bin/env node
+/**
+ * scripts/ingestSinaliteProducts.js
+ *
+ * Ingest Sinalite products + per-store product details into Postgres.
+ *
+ * Env:
+ *   DATABASE_URL
+ *   SINALITE_CLIENT_ID
+ *   SINALITE_CLIENT_SECRET
+ *   SINALITE_API_BASE        (optional)
+ *   SINALITE_AUTH_URL        (optional)
+ *   SINALITE_AUDIENCE        (optional)
+ *   SINALITE_STORE_CODES     (optional, csv like "en_us,en_ca")
+ *   SINALITE_DEBUG_SCHEMA=1  (optional)
+ *
+ * Usage:
+ *   node -r dotenv/config scripts/ingestSinaliteProducts.js
+ *   node -r dotenv/config scripts/ingestSinaliteProducts.js --limit 5
+ *   node -r dotenv/config scripts/ingestSinaliteProducts.js --productId 18
+ *   node -r dotenv/config scripts/ingestSinaliteProducts.js --storeCodes en_us,en_ca
+ *   node -r dotenv/config scripts/ingestSinaliteProducts.js --dry-run
+ */
 
-const dotenv = require('dotenv');
-const { Client } = require('pg');
+/* eslint-disable no-console */
+
+const dotenv = require("dotenv");
+const { Client } = require("pg");
 
 dotenv.config();
 
-const DEFAULT_API_BASE = 'https://api.sinaliteuppy.com';
-const DEFAULT_AUDIENCE = 'https://apiconnect.sinalite.com';
-const DEFAULT_STORE_CODES = ['en_ca', 'en_us'];
+const DEFAULT_API_BASE = "https://api.sinaliteuppy.com";
+const DEFAULT_AUDIENCE = "https://apiconnect.sinalite.com";
+const DEFAULT_STORE_CODES = ["en_ca", "en_us"];
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 800;
 
 const TABLES = {
-  products: 'sinalite_products',
-  options: 'sinalite_product_options',
-  pricing: 'sinalite_product_pricing',
-  metadata: 'sinalite_product_metadata',
-  rollOptions: 'sinalite_roll_label_options',
-  rollExclusions: 'sinalite_roll_label_exclusions',
-  rollContent: 'sinalite_roll_label_content',
+  products: "sinalite_products",
+  options: "sinalite_product_options",
+  pricing: "sinalite_product_pricing",
+  metadata: "sinalite_product_metadata",
+  rollOptions: "sinalite_roll_label_options",
+  rollExclusions: "sinalite_roll_label_exclusions",
+  rollContent: "sinalite_roll_label_content",
 };
 
 const DDL_STATEMENTS = [
@@ -126,17 +150,17 @@ function parseArgs(argv) {
   const args = { dryRun: false, limit: null, productId: null, storeCodes: null };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
-    if (token === '--dry-run') {
+    if (token === "--dry-run") {
       args.dryRun = true;
-    } else if (token === '--limit' && argv[i + 1]) {
+    } else if (token === "--limit" && argv[i + 1]) {
       args.limit = Number.parseInt(argv[i + 1], 10);
       i += 1;
-    } else if (token === '--productId' && argv[i + 1]) {
+    } else if (token === "--productId" && argv[i + 1]) {
       args.productId = Number.parseInt(argv[i + 1], 10);
       i += 1;
-    } else if (token === '--storeCodes' && argv[i + 1]) {
+    } else if (token === "--storeCodes" && argv[i + 1]) {
       args.storeCodes = argv[i + 1]
-        .split(',')
+        .split(",")
         .map((x) => x.trim())
         .filter(Boolean);
       i += 1;
@@ -147,27 +171,29 @@ function parseArgs(argv) {
 
 function requiredEnv(name) {
   const value = process.env[name];
-  if (!value || !value.trim()) {
+  if (!value || !String(value).trim()) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
-  return value.trim();
+  return String(value).trim();
 }
 
 function getConfig(args) {
-  const apiBase = (process.env.SINALITE_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, '');
+  const apiBase = (process.env.SINALITE_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, "");
+  const storeCodesRaw =
+    args.storeCodes ||
+    (process.env.SINALITE_STORE_CODES || DEFAULT_STORE_CODES.join(","))
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+
   return {
-    databaseUrl: requiredEnv('DATABASE_URL'),
-    clientId: requiredEnv('SINALITE_CLIENT_ID'),
-    clientSecret: requiredEnv('SINALITE_CLIENT_SECRET'),
+    databaseUrl: requiredEnv("DATABASE_URL"),
+    clientId: requiredEnv("SINALITE_CLIENT_ID"),
+    clientSecret: requiredEnv("SINALITE_CLIENT_SECRET"),
     apiBase,
     authUrl: process.env.SINALITE_AUTH_URL || `${apiBase}/auth/token`,
     audience: process.env.SINALITE_AUDIENCE || DEFAULT_AUDIENCE,
-    storeCodes:
-      args.storeCodes ||
-      (process.env.SINALITE_STORE_CODES || DEFAULT_STORE_CODES.join(','))
-        .split(',')
-        .map((x) => x.trim())
-        .filter(Boolean),
+    storeCodes: storeCodesRaw.length ? storeCodesRaw : DEFAULT_STORE_CODES,
   };
 }
 
@@ -175,43 +201,56 @@ async function fetchWithRetry(url, options = {}, retryCount = MAX_RETRIES) {
   for (let attempt = 1; attempt <= retryCount; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
     try {
       const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timeout);
+
       if (response.status === 429 || response.status >= 500) {
-        const retryAfter = response.headers.get('retry-after');
+        const retryAfter = response.headers.get("retry-after");
         const waitMs = retryAfter
           ? Number.parseInt(retryAfter, 10) * 1000
           : BASE_DELAY_MS * Math.pow(2, attempt - 1);
+
         if (attempt < retryCount) {
-          log('WARN', `Transient ${response.status} for ${url}. Retrying in ${waitMs}ms (${attempt}/${retryCount})`);
+          log(
+            "WARN",
+            `Transient ${response.status} for ${url}. Retrying in ${waitMs}ms (${attempt}/${retryCount})`
+          );
           await sleep(waitMs);
           continue;
         }
       }
+
       return response;
     } catch (error) {
       clearTimeout(timeout);
+
       if (attempt >= retryCount) {
         throw error;
       }
+
       const waitMs = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-      log('WARN', `Request error for ${url}: ${error.message}. Retrying in ${waitMs}ms (${attempt}/${retryCount})`);
+      log(
+        "WARN",
+        `Request error for ${url}: ${error?.message || String(error)}. Retrying in ${waitMs}ms (${attempt}/${retryCount})`
+      );
       await sleep(waitMs);
     }
   }
+
   throw new Error(`Exhausted retries for ${url}`);
 }
 
 async function getAccessToken(config) {
   const response = await fetchWithRetry(config.authUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       client_id: config.clientId,
       client_secret: config.clientSecret,
       audience: config.audience,
-      grant_type: 'client_credentials',
+      grant_type: "client_credentials",
     }),
   });
 
@@ -220,25 +259,34 @@ async function getAccessToken(config) {
     throw new Error(`Auth failed (${response.status}): ${text.slice(0, 250)}`);
   }
 
-  const parsed = JSON.parse(text);
-  if (!parsed.access_token) {
-    throw new Error('Auth response missing access_token');
+  let parsed;
+  try {
+    parsed = JSON.parse(text || "{}");
+  } catch {
+    throw new Error(`Auth returned non-JSON: ${text.slice(0, 250)}`);
   }
+
+  if (!parsed.access_token) {
+    throw new Error("Auth response missing access_token");
+  }
+
   return `Bearer ${parsed.access_token}`;
 }
 
 async function apiGet(config, token, path, searchParams = null) {
-  const query = searchParams ? `?${new URLSearchParams(searchParams).toString()}` : '';
-  const url = `${config.apiBase}/${path.replace(/^\//, '')}${query}`;
+  const query = searchParams ? `?${new URLSearchParams(searchParams).toString()}` : "";
+  const url = `${config.apiBase}/${String(path).replace(/^\//, "")}${query}`;
+
   const response = await fetchWithRetry(url, {
-    method: 'GET',
+    method: "GET",
     headers: {
       Authorization: token,
-      Accept: 'application/json',
+      Accept: "application/json",
     },
   });
 
   const bodyText = await response.text();
+
   if (response.status === 404) {
     return null;
   }
@@ -248,9 +296,21 @@ async function apiGet(config, token, path, searchParams = null) {
   }
 
   if (!bodyText) return null;
-  return JSON.parse(bodyText);
+
+  try {
+    return JSON.parse(bodyText);
+  } catch {
+    throw new Error(`GET ${path} returned non-JSON: ${bodyText.slice(0, 250)}`);
+  }
 }
 
+/**
+ * Sinalite "product/{id}/{store}" seems to return either:
+ * - an array with 3 arrays inside, or
+ * - an object with multiple arrays.
+ *
+ * We'll coerce into { array1, array2, array3 }.
+ */
 function parseDetailsPayload(payload) {
   if (Array.isArray(payload)) {
     return {
@@ -268,11 +328,15 @@ function parseDetailsPayload(payload) {
   };
 }
 
+/**
+ * Distinguish "roll-label" style payloads in array1.
+ * If sample item contains opt_val_id / option_val keys, treat as roll-label.
+ */
 function detectDetailsType(array1) {
-  const sample = Array.isArray(array1) ? array1.find((item) => item && typeof item === 'object') : null;
-  if (!sample) return 'regular';
-  if ('opt_val_id' in sample || 'option_val' in sample) return 'roll-label';
-  return 'regular';
+  const sample = Array.isArray(array1) ? array1.find((item) => item && typeof item === "object") : null;
+  if (!sample) return "regular";
+  if ("opt_val_id" in sample || "option_val" in sample) return "roll-label";
+  return "regular";
 }
 
 async function inspectSchema(client) {
@@ -286,6 +350,7 @@ async function inspectSchema(client) {
     WHERE table_schema = 'public'
     ORDER BY table_name;
   `);
+
   const columns = await client.query(`
     SELECT table_name, column_name, data_type
     FROM information_schema.columns
@@ -298,11 +363,10 @@ async function inspectSchema(client) {
     if (!summary[row.table_name]) summary[row.table_name] = [];
     summary[row.table_name].push(`${row.column_name}:${row.data_type}`);
   }
-}
 
-  log('INFO', `Schema inspection found ${tables.rowCount} public tables.`);
+  log("INFO", `Schema inspection found ${tables.rowCount} public tables.`);
   for (const table of tables.rows) {
-    log('INFO', ` - ${table.table_name}`, summary[table.table_name] || []);
+    log("INFO", ` - ${table.table_name}`, summary[table.table_name] || []);
   }
 }
 
@@ -338,9 +402,17 @@ async function upsertProduct(client, product, stats) {
       raw_json = EXCLUDED.raw_json,
       updated_at = NOW()
      RETURNING (xmax = 0) AS inserted;`,
-    [product.id, product.sku ?? null, product.name ?? null, product.category ?? null, product.enabled ?? null, JSON.stringify(product)],
+    [
+      product.id,
+      product.sku ?? null,
+      product.name ?? null,
+      product.category ?? null,
+      product.enabled ?? null,
+      JSON.stringify(product),
+    ]
   );
-  updateStat(stats, TABLES.products, result.rows[0].inserted);
+
+  updateStat(stats, TABLES.products, result.rows[0]?.inserted);
 }
 
 async function clearRegularTables(client, productId, storeCode) {
@@ -350,9 +422,18 @@ async function clearRegularTables(client, productId, storeCode) {
 }
 
 async function clearRollTables(client, productId, storeCode) {
-  await client.query(`DELETE FROM ${TABLES.rollOptions} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
-  await client.query(`DELETE FROM ${TABLES.rollExclusions} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
-  await client.query(`DELETE FROM ${TABLES.rollContent} WHERE product_id = $1 AND store_code = $2`, [productId, storeCode]);
+  await client.query(`DELETE FROM ${TABLES.rollOptions} WHERE product_id = $1 AND store_code = $2`, [
+    productId,
+    storeCode,
+  ]);
+  await client.query(`DELETE FROM ${TABLES.rollExclusions} WHERE product_id = $1 AND store_code = $2`, [
+    productId,
+    storeCode,
+  ]);
+  await client.query(`DELETE FROM ${TABLES.rollContent} WHERE product_id = $1 AND store_code = $2`, [
+    productId,
+    storeCode,
+  ]);
 }
 
 async function ingestRegular(client, productId, storeCode, details, stats) {
@@ -360,6 +441,8 @@ async function ingestRegular(client, productId, storeCode, details, stats) {
   await clearRollTables(client, productId, storeCode);
 
   for (const row of details.array1) {
+    const optionId = Number(row?.id ?? 0);
+
     const result = await client.query(
       `INSERT INTO ${TABLES.options}
         (product_id, store_code, option_id, option_group, option_name, raw_json, updated_at)
@@ -370,14 +453,16 @@ async function ingestRegular(client, productId, storeCode, details, stats) {
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
        RETURNING (xmax = 0) AS inserted;`,
-      [productId, storeCode, Number(row.id ?? 0), row.group ?? null, row.name ?? null, JSON.stringify(row)],
+      [productId, storeCode, optionId, row?.group ?? null, row?.name ?? null, JSON.stringify(row)]
     );
-    updateStat(stats, TABLES.options, result.rows[0].inserted);
+
+    updateStat(stats, TABLES.options, result.rows[0]?.inserted);
   }
 
   for (const row of details.array2) {
     const hash = row?.hash;
     if (!hash) continue;
+
     const result = await client.query(
       `INSERT INTO ${TABLES.pricing}
         (product_id, store_code, hash, value, raw_json, updated_at)
@@ -387,13 +472,15 @@ async function ingestRegular(client, productId, storeCode, details, stats) {
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
        RETURNING (xmax = 0) AS inserted;`,
-      [productId, storeCode, String(hash), row?.value != null ? String(row.value) : null, JSON.stringify(row)],
+      [productId, storeCode, String(hash), row?.value != null ? String(row.value) : null, JSON.stringify(row)]
     );
-    updateStat(stats, TABLES.pricing, result.rows[0].inserted);
+
+    updateStat(stats, TABLES.pricing, result.rows[0]?.inserted);
   }
 
   for (let i = 0; i < details.array3.length; i += 1) {
     const row = details.array3[i];
+
     const result = await client.query(
       `INSERT INTO ${TABLES.metadata}
         (product_id, store_code, metadata_index, raw_json, updated_at)
@@ -402,9 +489,10 @@ async function ingestRegular(client, productId, storeCode, details, stats) {
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
        RETURNING (xmax = 0) AS inserted;`,
-      [productId, storeCode, i, JSON.stringify(row)],
+      [productId, storeCode, i, JSON.stringify(row)]
     );
-    updateStat(stats, TABLES.metadata, result.rows[0].inserted);
+
+    updateStat(stats, TABLES.metadata, result.rows[0]?.inserted);
   }
 }
 
@@ -427,19 +515,21 @@ async function ingestRollLabel(client, productId, storeCode, details, stats) {
       [
         productId,
         storeCode,
-        row.option_id != null ? Number(row.option_id) : null,
-        row.opt_val_id != null ? Number(row.opt_val_id) : null,
-        row.name ?? null,
-        row.label ?? null,
-        row.option_val ?? null,
+        row?.option_id != null ? Number(row.option_id) : null,
+        row?.opt_val_id != null ? Number(row.opt_val_id) : null,
+        row?.name ?? null,
+        row?.label ?? null,
+        row?.option_val ?? null,
         JSON.stringify(row),
-      ],
+      ]
     );
-    updateStat(stats, TABLES.rollOptions, result.rows[0].inserted);
+
+    updateStat(stats, TABLES.rollOptions, result.rows[0]?.inserted);
   }
 
   for (let i = 0; i < details.array2.length; i += 1) {
     const row = details.array2[i];
+
     const result = await client.query(
       `INSERT INTO ${TABLES.rollExclusions}
         (product_id, store_code, exclusion_index, raw_json, updated_at)
@@ -448,13 +538,15 @@ async function ingestRollLabel(client, productId, storeCode, details, stats) {
         raw_json = EXCLUDED.raw_json,
         updated_at = NOW()
        RETURNING (xmax = 0) AS inserted;`,
-      [productId, storeCode, i, JSON.stringify(row)],
+      [productId, storeCode, i, JSON.stringify(row)]
     );
-    updateStat(stats, TABLES.rollExclusions, result.rows[0].inserted);
+
+    updateStat(stats, TABLES.rollExclusions, result.rows[0]?.inserted);
   }
 
   for (let i = 0; i < details.array3.length; i += 1) {
     const row = details.array3[i];
+
     const result = await client.query(
       `INSERT INTO ${TABLES.rollContent}
         (product_id, store_code, content_index, pricing_product_option_value_entity_id, content_type, content, raw_json, updated_at)
@@ -470,39 +562,56 @@ async function ingestRollLabel(client, productId, storeCode, details, stats) {
         productId,
         storeCode,
         i,
-        row?.pricing_product_option_value_entity_id != null
-          ? Number(row.pricing_product_option_value_entity_id)
-          : null,
+        row?.pricing_product_option_value_entity_id != null ? Number(row.pricing_product_option_value_entity_id) : null,
         row?.content_type ?? null,
         row?.content != null ? String(row.content) : null,
         JSON.stringify(row),
-      ],
+      ]
     );
-    updateStat(stats, TABLES.rollContent, result.rows[0].inserted);
+
+    updateStat(stats, TABLES.rollContent, result.rows[0]?.inserted);
   }
 }
 
 async function fetchProducts(config, token) {
-  const direct = await apiGet(config, token, 'product');
+  const direct = await apiGet(config, token, "product");
   if (Array.isArray(direct)) return direct;
   if (direct?.products && Array.isArray(direct.products)) return direct.products;
 
-  if (direct && typeof direct === 'object') {
+  // If API returns an object with pagination fields, attempt to page.
+  if (direct && typeof direct === "object") {
     const gathered = [];
     let page = 1;
+
+    // Try to infer total_pages if present; else just page until empty.
+    // Some APIs use per_page, some use pageSize — we keep it as per_page=100.
+    // NOTE: If the first response is not a product list, we'll still fall back to empty.
+    // eslint-disable-next-line no-constant-condition
     while (true) {
-      const pageResult = page === 1 ? direct : await apiGet(config, token, 'product', { page, per_page: 100 });
+      // For page=1, reuse direct. Otherwise fetch.
+      const pageResult =
+        page === 1 ? direct : await apiGet(config, token, "product", { page, per_page: 100 });
+
       const rows = Array.isArray(pageResult)
         ? pageResult
         : Array.isArray(pageResult?.products)
           ? pageResult.products
           : [];
+
+      if (!rows.length) break;
+
       gathered.push(...rows);
-      const hasNext =
-        Number.isFinite(Number(pageResult?.total_pages)) && page < Number(pageResult.total_pages);
-      if (!hasNext || rows.length === 0) break;
+
+      const tp = Number(pageResult?.total_pages);
+      const hasNext = Number.isFinite(tp) ? page < tp : rows.length > 0;
+
+      if (!hasNext) break;
       page += 1;
+
+      // safety: avoid infinite paging if API lies
+      if (page > 10_000) break;
     }
+
     return gathered;
   }
 
@@ -512,16 +621,18 @@ async function fetchProducts(config, token) {
 async function ingest() {
   const args = parseArgs(process.argv.slice(2));
   const config = getConfig(args);
+
   const start = Date.now();
   const client = new Client({ connectionString: config.databaseUrl });
   const stats = createStats();
+
   let detailCalls = 0;
   const failures = [];
 
   await client.connect();
 
   try {
-    log('INFO', 'Starting Sinalite ingestion', {
+    log("INFO", "Starting Sinalite ingestion", {
       dryRun: args.dryRun,
       limit: args.limit,
       productId: args.productId,
@@ -530,19 +641,21 @@ async function ingest() {
     });
 
     await inspectSchema(client);
+
     if (!args.dryRun) {
       await ensureTables(client);
-      log('INFO', 'Ensured Sinalite tables and indexes exist.');
+      log("INFO", "Ensured Sinalite tables and indexes exist.");
     } else {
-      log('INFO', 'Dry run enabled; skipping DDL and writes.');
+      log("INFO", "Dry run enabled; skipping DDL and writes.");
     }
 
     const token = await getAccessToken(config);
-    log('INFO', 'Obtained access token.');
+    log("INFO", "Obtained access token.");
 
     let products = await fetchProducts(config, token);
+
     if (args.productId) {
-      products = products.filter((p) => Number(p.id) === Number(args.productId));
+      products = products.filter((p) => Number(p?.id) === Number(args.productId));
       if (!products.length) {
         products = [{ id: args.productId }];
       }
@@ -552,11 +665,12 @@ async function ingest() {
       products = products.slice(0, args.limit);
     }
 
-    log('INFO', `Fetched ${products.length} products from /product.`);
+    log("INFO", `Fetched ${products.length} products from /product.`);
 
     for (const product of products) {
-      const productId = Number(product.id);
+      const productId = Number(product?.id);
       if (!Number.isFinite(productId)) continue;
+
       if (!args.dryRun) {
         await upsertProduct(client, product, stats);
       }
@@ -564,10 +678,11 @@ async function ingest() {
       for (const storeCode of config.storeCodes) {
         const pairStart = Date.now();
         detailCalls += 1;
+
         try {
           const detailsPayload = await apiGet(config, token, `product/${productId}/${storeCode}`);
           if (!detailsPayload) {
-            log('WARN', `No detail payload for product=${productId} store=${storeCode}`);
+            log("WARN", `No detail payload for product=${productId} store=${storeCode}`);
             continue;
           }
 
@@ -575,36 +690,45 @@ async function ingest() {
           const kind = detectDetailsType(details.array1);
 
           if (!args.dryRun) {
-            await client.query('BEGIN');
-            if (kind === 'roll-label') {
-              await ingestRollLabel(client, productId, storeCode, details, stats);
-            } else {
-              await ingestRegular(client, productId, storeCode, details, stats);
+            await client.query("BEGIN");
+
+            try {
+              if (kind === "roll-label") {
+                await ingestRollLabel(client, productId, storeCode, details, stats);
+              } else {
+                await ingestRegular(client, productId, storeCode, details, stats);
+              }
+              await client.query("COMMIT");
+            } catch (innerErr) {
+              await client.query("ROLLBACK").catch(() => {});
+              throw innerErr;
             }
-            await client.query('COMMIT');
           }
 
-          log('INFO', `Processed product=${productId} store=${storeCode} kind=${kind} arrays=[${details.array1.length},${details.array2.length},${details.array3.length}] in ${Date.now() - pairStart}ms`);
+          log(
+            "INFO",
+            `Processed product=${productId} store=${storeCode} kind=${kind} arrays=[${details.array1.length},${details.array2.length},${details.array3.length}] in ${Date.now() - pairStart}ms`
+          );
         } catch (error) {
-          failures.push({ productId, storeCode, error: error.message });
-          await client.query('ROLLBACK').catch(() => {});
-          log('ERROR', `Failed product=${productId} store=${storeCode}: ${error.message}`);
+          failures.push({ productId, storeCode, error: error?.message || String(error) });
+          log("ERROR", `Failed product=${productId} store=${storeCode}: ${error?.message || String(error)}`);
         }
       }
     }
 
     const elapsed = Date.now() - start;
-    log('INFO', `Completed ingestion in ${elapsed}ms.`);
+    log("INFO", `Completed ingestion in ${elapsed}ms.`);
 
-    console.log('\n=== INGESTION SUMMARY ===');
+    console.log("\n=== INGESTION SUMMARY ===");
     console.log(`Products fetched: ${products.length}`);
     console.log(`Detail calls made: ${detailCalls}`);
-    console.log('Per-table inserted/updated counts:');
+    console.log("Per-table inserted/updated counts:");
     for (const [tableName, count] of Object.entries(stats)) {
       console.log(` - ${tableName}: inserted=${count.inserted}, updated=${count.updated}`);
     }
+
     if (failures.length > 0) {
-      console.log('Failures:');
+      console.log("Failures:");
       for (const failure of failures) {
         console.log(` - product_id=${failure.productId}, store_code=${failure.storeCode}, error=${failure.error}`);
       }
@@ -616,6 +740,6 @@ async function ingest() {
 }
 
 ingest().catch((error) => {
-  console.error(`[${nowIso()}] [FATAL] ${error.message}`);
+  console.error(`[${nowIso()}] [FATAL] ${error?.message || String(error)}`);
   process.exit(1);
 });

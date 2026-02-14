@@ -2,7 +2,7 @@
 
 import Image from "@/components/ImageSafe";
 import { cfImage } from "@/lib/cfImages";
-import { r2PublicUrl } from "@/lib/r2Public";
+import { r2PublicUrl } from "@/lib/artwork/r2Public";
 
 type Props = {
   /** R2 public (absolute URL or key) */

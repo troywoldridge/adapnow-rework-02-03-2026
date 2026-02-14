@@ -7,7 +7,7 @@ import { cookies, headers } from "next/headers";
 
 import CartPageClient from "./CartPageClient";
 import type { CartItem } from "@/components/CartLineItem";
-import type { ShippingRate } from "@/components/CartShippingEstimator";
+import type { ShippingRate } from "@/components/cart/CartShippingEstimator";
 import { site } from "@/config/site";
 
 export const runtime = "nodejs";

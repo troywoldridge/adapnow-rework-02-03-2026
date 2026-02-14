@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import CartSummary from "@/components/CartSummary";
-import type { ShippingRate } from "@/components/CartShippingEstimator";
+import type { ShippingRate } from "@/components/cart/CartShippingEstimator";
 
 /* =========================================================
    Types
