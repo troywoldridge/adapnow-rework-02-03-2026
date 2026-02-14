@@ -42,3 +42,8 @@ dist/
 
 # TS build
 tsconfig.tsbuildinfo
+
+# Sinalite exports
+/table_data/sinalite_api_export/
+/table_data/sinalite_categorized_export/
+
