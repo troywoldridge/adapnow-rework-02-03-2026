@@ -2,86 +2,85 @@
 import "server-only";
 
 import { auth, currentUser } from "@clerk/nextjs/server";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { customers } from "@/lib/db/schema/customer";
 
-export type CustomerRow = typeof customers.$inferSelect;
+type HttpStatus = 401;
 
-function clean(v: unknown): string {
+function jsonError(status: HttpStatus, message: string): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+function s(v: unknown): string {
   return String(v ?? "").trim();
 }
 
-function bestEmail(user: Awaited<ReturnType<typeof currentUser>>): string | null {
-  if (!user) return null;
-
-  const primary = clean(user.primaryEmailAddress?.emailAddress);
-  if (primary) return primary;
-
-  const first = clean(user.emailAddresses?.[0]?.emailAddress);
-  return first || null;
-}
-
-function displayName(user: Awaited<ReturnType<typeof currentUser>>): string | null {
-  if (!user) return null;
-
-  const full = clean(user.fullName);
-  if (full) return full;
-
-  const username = clean(user.username);
-  if (username) return username;
-
-  const first = clean(user.firstName);
-  const last = clean(user.lastName);
-  const combined = clean([first, last].filter(Boolean).join(" "));
-  return combined || null;
+function firstNonEmpty(...vals: Array<unknown>): string | null {
+  for (const v of vals) {
+    const t = s(v);
+    if (t) return t;
+  }
+  return null;
 }
 
 /**
  * Ensure there's a customers row for the current Clerk user.
- * - Requires a non-null email per your table.
- * - Upserts by unique clerkUserId.
+ * - Requires an authenticated user.
+ * - Upserts by unique clerk_user_id.
+ * - Populates email/name/display_name when available.
  */
-export async function ensureCustomer(): Promise<CustomerRow> {
-  const { userId } = await auth();
-  if (!userId) throw new Error("Not authenticated");
+export async function ensureCustomer() {
+  const a = await auth();
+  if (!a?.userId) throw jsonError(401, "Unauthorized");
 
   const user = await currentUser();
 
-  // email is required by your schema (NOT NULL)
-  const email = bestEmail(user);
-  if (!email) {
-    throw new Error("Authenticated user has no email address");
-  }
+  const email =
+    firstNonEmpty(
+      user?.primaryEmailAddress?.emailAddress,
+      user?.emailAddresses?.[0]?.emailAddress
+    ) ?? null;
 
-  const display = displayName(user);
+  const firstName = firstNonEmpty(user?.firstName) ?? null;
+  const lastName = firstNonEmpty(user?.lastName) ?? null;
+
+  const fallbackDisplay = [firstName ?? "", lastName ?? ""].map((x) => x.trim()).filter(Boolean).join(" ");
+  const displayName =
+    firstNonEmpty(user?.fullName, user?.username, fallbackDisplay) ?? null;
 
   const toInsert = {
-    clerkUserId: userId,
-    email,
-    ...(display ? { displayName: display } : {}),
-    // phoneEnc / marketingOptIn can be set later via profile flows
+    clerkUserId: a.userId,
+    ...(email ? { email } : {}),
+    ...(firstName ? { firstName } : {}),
+    ...(lastName ? { lastName } : {}),
+    ...(displayName ? { displayName } : {}),
   };
 
-  const [cust] = await db
+  const [row] = await db
     .insert(customers)
     .values(toInsert)
     .onConflictDoUpdate({
       target: customers.clerkUserId,
       set: {
-        email, // keep email current with Clerk
-        ...(display ? { displayName: display } : {}),
-        updatedAt: sql`now()`,
+        ...(email ? { email } : {}),
+        ...(firstName ? { firstName } : {}),
+        ...(lastName ? { lastName } : {}),
+        ...(displayName ? { displayName } : {}),
+        updatedAt: new Date(),
       },
     })
     .returning();
 
-  return cust;
+  return row;
 }
 
-export async function getCustomerByClerk(userId: string): Promise<CustomerRow | null> {
-  const id = clean(userId);
+export async function getCustomerByClerk(userId: string) {
+  const id = s(userId);
   if (!id) return null;
 
   const rows = await db

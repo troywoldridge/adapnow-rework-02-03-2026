@@ -1,7 +1,7 @@
 // src/lib/sinalite.validateOptions.ts
 import "server-only";
 
-import type { SinaliteProductOption } from "@/lib/sinalite.product";
+import type { SinaliteProductOption } from "@/lib/sinalite/sinalite.product";
 
 export type OptionValidationResult =
   | {

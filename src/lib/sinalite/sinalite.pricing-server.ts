@@ -1,7 +1,7 @@
 // src/lib/sinalite.pricing-server.ts
 import "server-only";
 
-import { getSinaliteBearer } from "@/lib/sinalite.server";
+import { getSinaliteBearer } from "@/lib/sinalite/sinalite.server";
 
 const API_BASE =
   (process.env.SINALITE_API_BASE ??

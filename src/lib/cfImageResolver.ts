@@ -8,7 +8,7 @@
 import "server-only";
 
 import productAssets from "@/data/productAssets.json";
-import { getSinaliteProductMeta } from "@/lib/sinalite.client";
+import { getSinaliteProductMeta } from "@/lib/sinalite/sinalite.client";
 
 type AssetRow = {
   product_id?: number | string | null;

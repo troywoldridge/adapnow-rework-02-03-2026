@@ -13,7 +13,7 @@ import {
 import {
   getSinaliteProductArrays,
   normalizeOptionGroups,
-} from "@/lib/sinalite.client";
+} from "@/lib/sinalite/sinalite.client";
 
 function getBase(): string {
   return getEnv().SINALITE_BASE_URL || "https://liveapi.sinalite.com";

@@ -10,4 +10,4 @@
  */
 import "server-only";
 
-export { env as sinaliteEnv, apiFetchJson, buildUrl } from "@/lib/sinalite.client";
+export { env as sinaliteEnv, apiFetchJson, buildUrl } from "@/lib/sinalite/sinalite.client";

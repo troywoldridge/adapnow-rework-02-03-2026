@@ -2,7 +2,7 @@
 import "server-only";
 
 import { lruGet, lruSet } from "@/lib/lru";
-import { getSinaliteProductArrays, normalizeOptionGroups } from "@/lib/sinalite.client";
+import { getSinaliteProductArrays, normalizeOptionGroups } from "@/lib/sinalite/sinalite.client";
 
 /**
  * Tiny memo so we don't re-fetch product option metadata constantly.

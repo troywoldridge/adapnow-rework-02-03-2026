@@ -1,5 +1,5 @@
 import ProductCard from "@/components/product/ProductCard";
-import { getProductsBySubcategory } from "@/lib/sinalite.client";
+import { getProductsBySubcategory } from "@/lib/sinalite/sinalite.client";
 import { mergeProduct } from "@/lib/mergeUtils";
 import type { Product } from "@/types/product";
 

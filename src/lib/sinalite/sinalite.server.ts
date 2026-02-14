@@ -1,3 +1,4 @@
+// src/lib/sinalite.server.ts
 /**
  * @deprecated Prefer importing from @/lib/sinalite. This module will be removed in a future version.
  *
@@ -7,8 +8,7 @@
  * Notes:
  * - API base is normalized (no trailing slash)
  * - All calls are no-store
- * - Adds timeouts, safer parsing, better errors
- * - Pricing is normalized to BOTH dollars (38.95) and cents (3895)
+ * - Adds small helpers for safer parsing + better errors
  */
 
 import "server-only";
@@ -16,22 +16,7 @@ import "server-only";
 import { getEnv } from "@/lib/env";
 import { getSinaliteAccessToken } from "@/lib/getSinaliteAccessToken";
 
-function s(v: unknown): string {
-  return String(v ?? "").trim();
-}
-
-function normalizeBaseUrl(v: unknown): string {
-  const base = s(v) || "https://api.sinaliteuppy.com";
-  return base.replace(/\/+$/, "");
-}
-
-/** Exported for compatibility. Prefer getApiBase() for normalized usage. */
-export const API_BASE = normalizeBaseUrl(getEnv().SINALITE_BASE_URL || "https://api.sinaliteuppy.com");
-
-function getApiBase(): string {
-  // Keep in sync with API_BASE but allow env changes during runtime
-  return normalizeBaseUrl(getEnv().SINALITE_BASE_URL || API_BASE);
-}
+export const API_BASE = getEnv().SINALITE_BASE_URL || "https://api.sinaliteuppy.com";
 
 /** Per Sinalite: 6 = Canada, 9 = US (legacy numeric code some endpoints use) */
 export function resolveStoreCode(country: "US" | "CA"): 9 | 6 {
@@ -45,39 +30,28 @@ export async function getSinaliteBearer(): Promise<string> {
 }
 
 function asBearer(token: string): string {
-  const t = s(token);
+  const t = String(token ?? "").trim();
   if (!t) return "";
   return /^Bearer\s/i.test(t) ? t : `Bearer ${t}`;
 }
 
 function resolveStoreString(input?: string | null): string {
-  const sc = s(input ?? getEnv().NEXT_PUBLIC_STORE_CODE ?? "");
+  const sc = (input ?? getEnv().NEXT_PUBLIC_STORE_CODE ?? "").trim();
   if (!sc) throw new Error("Missing storeCode (NEXT_PUBLIC_STORE_CODE).");
   return sc;
 }
 
 function buildUrl(baseUrl: string, path: string): string {
-  const b = normalizeBaseUrl(baseUrl);
-  const p = s(path);
+  const b = String(baseUrl ?? "").trim().replace(/\/+$/, "");
+  const p = String(path ?? "").trim();
   const p2 = p.startsWith("/") ? p : `/${p}`;
   return `${b}${p2}`;
 }
 
-function truncate(v: unknown, max = 600): string {
-  const t = String(v ?? "");
+function truncate(s: string, max = 500): string {
+  const t = String(s ?? "");
   if (t.length <= max) return t;
   return `${t.slice(0, max)}…`;
-}
-
-function toNumber(v: unknown): number | null {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function dollarsToCents(v: unknown): number {
-  const n = toNumber(v);
-  if (n == null || n < 0) return 0;
-  return Math.round(n * 100);
 }
 
 export class SinaliteApiError extends Error {
@@ -87,19 +61,18 @@ export class SinaliteApiError extends Error {
 
   constructor(message: string, status: number, path: string, body?: string) {
     super(message);
-    this.name = "SinaliteApiError";
     this.status = status;
     this.body = body;
     this.path = path;
   }
 }
 
-/** Typed fetch to Sinalite with auth + JSON, no-store cache, and timeout. */
+/** Typed fetch to Sinalite with auth + JSON, no-store cache. */
 async function apiFetch<T>(
   path: string,
-  init: RequestInit & { baseUrl?: string; timeoutMs?: number } = {}
+  init: RequestInit & { baseUrl?: string } = {}
 ): Promise<T> {
-  const baseUrl = normalizeBaseUrl(init.baseUrl ?? getApiBase());
+  const baseUrl = (init.baseUrl ?? API_BASE).trim().replace(/\/+$/, "");
   const token = asBearer(await getSinaliteAccessToken());
 
   if (!token) {
@@ -108,52 +81,35 @@ async function apiFetch<T>(
 
   const url = buildUrl(baseUrl, path);
 
-  const timeoutMs = Math.max(1_000, Math.min(120_000, Number(init.timeoutMs ?? 30_000)));
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      ...init,
-      headers: {
-        "content-type": "application/json",
-        authorization: token,
-        ...(init.headers || {}),
-      },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-  } catch (err) {
-    const msg =
-      err instanceof Error && err.name === "AbortError"
-        ? `Sinalite request timed out after ${timeoutMs}ms @ ${path}`
-        : `Sinalite network error @ ${path}`;
-    throw new SinaliteApiError(msg, 502, path);
-  } finally {
-    clearTimeout(t);
-  }
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      authorization: token,
+      ...(init.headers || {}),
+    },
+    cache: "no-store",
+  });
 
   const text = await res.text().catch(() => "");
 
   if (!res.ok) {
     throw new SinaliteApiError(
-      `Sinalite ${res.status} ${res.statusText} @ ${path} — ${truncate(text, 900)}`,
+      `Sinalite ${res.status} ${res.statusText} @ ${path} – ${truncate(text, 500)}`,
       res.status,
       path,
       text
     );
   }
 
-  // Some endpoints may legitimately return empty body.
   if (!text) return undefined as T;
 
   try {
     return JSON.parse(text) as T;
   } catch {
-    // Rare: upstream may return plain text with 200 in edge cases.
+    // Some upstream errors come back as plain text even with 200s in rare cases.
     throw new SinaliteApiError(
-      `Sinalite returned non-JSON @ ${path} — ${truncate(text, 300)}`,
+      `Sinalite returned non-JSON @ ${path} – ${truncate(text, 200)}`,
       502,
       path,
       text
@@ -162,7 +118,7 @@ async function apiFetch<T>(
 }
 
 /* ────────────────────────────────────────────────────────────
-   STOREFRONT CATALOG HELPERS (Sinalite docs)
+   STOREFRONT CATALOG HELPERS (SinaLite docs)
    GET /storefront/{store}/subcategories/{id}
    GET /storefront/{store}/subcategories/{id}/products
 ──────────────────────────────────────────────────────────── */
@@ -193,7 +149,7 @@ export type StorefrontProduct = {
   image?: string;
   category_id?: number | string;
   subcategory_id?: number | string;
-  // any other keys from Sinalite are passed through by your merge layer
+  // any other keys from SinaLite are passed through by your merge layer
   [k: string]: unknown;
 };
 
@@ -210,12 +166,11 @@ export async function getProductsBySubcategory(
 
 /* ────────────────────────────────────────────────────────────
    PRICING  (POST /price/{productId}/{storeCodeNumeric})
-   NOTE: Sinalite returns the JOB TOTAL (line price) in dollars.
-   Your app prefers cents internally, so we return BOTH.
+   NOTE: SinaLite returns the JOB TOTAL (line price).
 ──────────────────────────────────────────────────────────── */
 
 type PriceResp = {
-  price?: string | number; // job total in dollars for selected chain
+  price?: string | number; // job total for selected chain
   packageInfo?: Record<string, string>;
   productOptions?: Record<string, string>; // group -> optionId
 };
@@ -225,35 +180,26 @@ export async function priceByOptionIds(params: {
   storeCode: 6 | 9;
   optionIds: (number | string)[];
   baseUrl?: string;
-  timeoutMs?: number;
-}): Promise<{
-  linePrice: number; // dollars, e.g. 38.95
-  linePriceCents: number; // cents, e.g. 3895
-  optionsByGroup: Record<string, string>;
-  packageInfo?: Record<string, string>;
-}> {
-  const { productId, storeCode, optionIds, baseUrl, timeoutMs } = params;
+}): Promise<{ linePriceCents: number; optionsByGroup: Record<string, string> }> {
+  const { productId, storeCode, optionIds, baseUrl } = params;
 
   const data = await apiFetch<PriceResp>(`/price/${productId}/${storeCode}`, {
     method: "POST",
     body: JSON.stringify({ productOptions: (optionIds || []).map((v) => String(v)) }),
     baseUrl,
-    timeoutMs,
   });
 
-  const linePrice = toNumber(data?.price) ?? 0;
-  const linePriceCents = dollarsToCents(linePrice);
+  // IMPORTANT: `price` is the full job total for the current option chain (Qty included).
+  const priceNum = Number(data?.price);
+  const linePriceCents = Number.isFinite(priceNum) ? Math.round(priceNum * 100) : 0;
 
   const optionsByGroup = (data?.productOptions ?? {}) as Record<string, string>;
-  const packageInfo = data?.packageInfo;
-
-  return { linePrice, linePriceCents, optionsByGroup, ...(packageInfo ? { packageInfo } : {}) };
+  return { linePriceCents, optionsByGroup };
 }
 
 /* ────────────────────────────────────────────────────────────
    SHIPPING ESTIMATE (POST /order/shippingEstimate)
    Accepts both option-ids array and options map, per docs.
-   Rate amounts returned are dollars (often number, sometimes string).
 ──────────────────────────────────────────────────────────── */
 
 export type EstimateItemIds = { productId: number; optionIds: (number | string)[] };
@@ -264,7 +210,7 @@ export type ShippingRate = {
   carrier: string;
   serviceCode: string;
   serviceName: string;
-  amount: number; // dollars, e.g. 12.34
+  amount: number;
   currency: "USD" | "CAD";
   eta: string | null;
   days: number | null;
@@ -275,53 +221,40 @@ type EstimateRaw = {
   body?: [string, string, number | string, number | string | null][];
 };
 
-function isEstimateItemIds(x: EstimateItemIds | EstimateItemMap): x is EstimateItemIds {
-  return (x as EstimateItemIds).optionIds !== undefined;
-}
-
 export async function estimateShipping(params: {
   items: (EstimateItemIds | EstimateItemMap)[];
   shippingInfo: EstimateDest;
   baseUrl?: string;
-  timeoutMs?: number;
 }): Promise<ShippingRate[]> {
-  const { items, shippingInfo, baseUrl, timeoutMs } = params;
+  const { items, shippingInfo, baseUrl } = params;
   if (!items?.length) throw new Error("No shippable items.");
 
-  const itemsPayload = items.map((it) => {
-    if (isEstimateItemIds(it)) {
-      return {
-        productId: Number(it.productId),
-        options: (it.optionIds || []).map((v) => String(v)),
-      };
-    }
-    return {
-      productId: Number(it.productId),
-      options: it.options,
-    };
-  });
+  const itemsPayload = items.map((it: any) =>
+    Array.isArray(it.optionIds)
+      ? { productId: Number(it.productId), options: it.optionIds.map((v: any) => String(v)) }
+      : { productId: Number(it.productId), options: it.options }
+  );
 
   const raw = await apiFetch<EstimateRaw>(`/order/shippingEstimate`, {
     method: "POST",
     body: JSON.stringify({ items: itemsPayload, shippingInfo }),
     baseUrl,
-    timeoutMs,
   });
 
   const currency: "USD" | "CAD" = shippingInfo.ShipCountry === "US" ? "USD" : "CAD";
 
   return (raw.body ?? []).map(([carrier, method, price, d]) => {
-    const amt = toNumber(price) ?? 0;
-    const days = toNumber(d);
+    const amt = Number(price);
+    const days = Number(d);
 
     return {
       carrier: String(carrier),
       serviceCode: String(method),
       serviceName: String(method),
-      amount: amt, // dollars
+      amount: Number.isFinite(amt) ? amt : 0,
       currency,
-      eta: Number.isFinite(days ?? NaN) ? `${days} business day${days === 1 ? "" : "s"}` : null,
-      days: Number.isFinite(days ?? NaN) ? (days as number) : null,
+      eta: Number.isFinite(days) ? `${days} business day${days === 1 ? "" : "s"}` : null,
+      days: Number.isFinite(days) ? days : null,
     };
   });
 }
