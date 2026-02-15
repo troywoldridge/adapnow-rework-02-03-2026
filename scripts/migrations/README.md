@@ -1,12 +1,22 @@
-# Legacy migrations (deprecated)
+# Legacy migrations (DEPRECATED)
 
-These SQL files duplicate schema that is now managed by Drizzle ORM.
+This folder is deprecated.
 
-**Use Drizzle instead:**
+## Current authoritative workflow
+Use Drizzle migrations only:
 
-- Generate migration: `DATABASE_URL=... pnpm db:generate`
-- Apply migration: `DATABASE_URL=... pnpm db:migrate`
-- Push schema (dev): `DATABASE_URL=... pnpm db:push`
+- Schema: `src/lib/db/schema/index.ts`
+- Generate: `pnpm drizzle-kit generate`
+- Apply: `pnpm drizzle-kit migrate`
 
-Schema source: `src/lib/db/schema/`  
-Migration output: `drizzle/`
+## Archival guidance
+- Do not delete legacy SQL immediately.
+- Archive legacy migration folders after:
+  1. Production has applied Drizzle migrations successfully
+  2. A snapshot/backup exists
+  3. Migration health endpoint reports clean status
+
+Recommended archive approach:
+- Move legacy folders to `archive/legacy-sql-migrations/` (outside runtime scripts)
+- Keep them read-only for historical reference
+

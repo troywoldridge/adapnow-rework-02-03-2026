@@ -6,6 +6,9 @@ export * from "./enums";
 
 // Export tables/relations/etc
 export * from "./addresses";
+export * from "./artwork_staged";
+export * from "./artwork_uploads";
+export * from "./cart_artwork";
 // export * from "./carts";
 // export * from "./cart_lines";
 // export * from "./cart_attachments";
@@ -26,3 +29,7 @@ export {
   // loyaltyTransactionInsertSchema,
   // loyaltyTransactionSelectSchema,
 } from "./loyalty_transactions";
+
+// export * from "./products";
+
+// export * from "./users";

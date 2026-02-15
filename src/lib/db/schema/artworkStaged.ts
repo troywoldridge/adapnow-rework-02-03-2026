@@ -1,7 +1,11 @@
 // src/lib/db/schema/artworkStaged.ts
 //
-// Back-compat alias.
-// Some routes still import `artworkStaged`, but the real table is `artworkUploads`.
-// This shim lets you keep rebuilding without touching every import yet.
+// DEPRECATED SHIM — DO NOT DEFINE TABLES HERE.
+// Legacy import compatibility only.
+//
+// Canonical staged-artwork table is `artwork_uploads`:
+//   import { artworkUploads } from "@/lib/db/schema/artwork_uploads";
+//
+// This file re-exports the `artwork_staged` shim, which maps to `artwork_uploads`.
 
-export { artworkUploads as artworkStaged } from "./artworkUploads";
+export * from "./artwork_staged";

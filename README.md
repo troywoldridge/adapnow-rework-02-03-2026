@@ -163,3 +163,59 @@ https://nextjs.org/docs
 https://nextjs.org/learn
 
 https://github.com/vercel/next.js
+
+---
+
+## Migrations (AUTHORITATIVE)
+
+This project uses **Drizzle** as the **only** supported migration workflow.
+
+### Generate a migration
+1. Update schema in `src/lib/db/schema/*` (canonical exports in `src/lib/db/schema/index.ts`)
+2. Generate migration:
+
+```bash
+pnpm drizzle-kit generate
+
+Apply migrations
+
+Apply pending migrations to the configured database:
+
+pnpm drizzle-kit migrate
+
+Rules
+
+Do not apply raw SQL migrations from legacy folders (scripts/sql, scripts/sql-migrations) in production.
+
+Backfills must be idempotent, logged, and safe to re-run.
+
+Schema changes that require data transformation must include:
+
+a Drizzle migration (DDL)
+
+a backfill script (DML) under scripts/backfills/
+
+Backfills
+
+See:
+
+docs/migrations-playbook.md
+
+scripts/backfills/README.md
+
+Admin migration health endpoint
+
+An internal endpoint is available:
+
+GET /api/admin/migrations/health
+
+Requires header: x-migration-health-secret: <MIGRATION_HEALTH_SECRET>
+
+Returns:
+
+Whether expected tables exist
+
+Latest applied migration (if Drizzle migration table is present)
+
+Basic DB connectivity status
+
