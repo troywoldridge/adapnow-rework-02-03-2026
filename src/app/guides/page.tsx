@@ -1,19 +1,38 @@
+// src/app/guides/page.tsx
 import "server-only";
 
-import type { Metadata, Viewport } from "next";
-import Link from "next/link";
+import type { Metadata } from "next";
+import path from "node:path";
+import { promises as fsp } from "node:fs";
+import GuidesClient from "@/components/guides/GuidesClient";
+
+export const runtime = "nodejs";        // we use fs
+export const dynamic = "force-dynamic"; // read disk in dev (safe for prod too)
+
+export type FileNode = {
+  label: string;
+  href: string;       // /guides/…
+  sizeBytes: number;  // for display
+  mtimeMs: number;    // for sitemap & sort
+};
+
+export type DirNode = {
+  title: string;
+  children: DirNode[];
+  files: FileNode[];
+};
 
 function readEnv(key: string): string | null {
   const v = process.env[key];
   if (!v) return null;
   const s = String(v).trim();
-  return s || null;
+  return s ? s : null;
 }
 
-function joinUrl(base: string, path: string): string {
+function joinUrl(base: string, p: string): string {
   const b = base.replace(/\/+$/, "");
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return `${b}${p}`;
+  const pathPart = p.startsWith("/") ? p : `/${p}`;
+  return `${b}${pathPart}`;
 }
 
 function getSiteBaseUrl(): string {
@@ -48,6 +67,8 @@ function getCfImagesAccountHash(): string | null {
 }
 
 function getCfImageVariant(): string {
+  // Make an OG-specific variant in CF Images if you want (1200x630).
+  // You can change this later without code changes.
   return (
     readEnv("NEXT_PUBLIC_CF_OG_IMAGE_VARIANT") ||
     readEnv("CF_OG_IMAGE_VARIANT") ||
@@ -67,69 +88,31 @@ function buildCfImagesUrl(imageId: string | null | undefined): string | null {
 }
 
 function getSocialShareImageUrl(baseUrl: string): string | null {
-  const id =
+  // Prefer DEFAULT_SOCIAL_SHARE_IMAGE_ID (Cloudflare Images ID),
+  // fallback to logo ID. Also supports literal absolute URLs if you ever switch.
+  const raw =
     readEnv("DEFAULT_SOCIAL_SHARE_IMAGE_ID") ||
     readEnv("NEXT_PUBLIC_DEFAULT_SOCIAL_SHARE_IMAGE_ID") ||
     readEnv("NEXT_PUBLIC_CF_LOGO_ID") ||
     null;
 
-  const maybeUrl = safeAbsoluteUrlMaybe(id, baseUrl);
+  const maybeUrl = safeAbsoluteUrlMaybe(raw, baseUrl);
   if (maybeUrl) return maybeUrl;
 
-  return buildCfImagesUrl(id);
+  return buildCfImagesUrl(raw);
 }
 
 function getBrandName(): string {
-  return readEnv("NEXT_PUBLIC_SITE_NAME") || "ADAP";
+  return readEnv("NEXT_PUBLIC_SITE_NAME") || "American Design And Printing";
 }
-
-function getLastUpdated(): string {
-  // Recommended env (stable):
-  // ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
-  // NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
-  return (
-    readEnv("ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
-    readEnv("NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
-    "2026-02-15"
-  ).trim();
-}
-
-function formatPrettyDate(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return iso;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  const months = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-  ];
-  const mm = months[month - 1];
-  if (!mm || !year || !day) return iso;
-  return `${mm} ${day}, ${year}`;
-}
-
-export const viewport: Viewport = {
-  themeColor: "#000000",
-};
 
 export async function generateMetadata(): Promise<Metadata> {
   const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
+  const canonical = joinUrl(baseUrl, "/guides");
 
-  const title = "Accessibility | ADAP";
+  const title = "Artwork Setup Guides";
   const description =
-    "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.";
+    "Download print-ready PDF templates and file setup guides for every product.";
 
   const ogImage = getSocialShareImageUrl(baseUrl);
 
@@ -166,13 +149,86 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default function AccessibilityPage() {
-  const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
+const GUIDES_ROOT = path.join(process.cwd(), "public", "guides");
 
+function humanizeFolder(name: string) {
+  return name.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function humanizeFile(base: string) {
+  let s = base.replace(/\.[^.]+$/, "");
+  s = s.replace(/\s*\(\d+\)\s*$/, ""); // drop “(1)”
+  s = s.replace(/[_-]+/g, " ");
+  s = s.replace(/\s*x\s*/gi, " × "); // 12 × 24
+  s = s.replace(/\s+/g, " ").trim();
+  s = s.replace(/\b([a-z])/g, (m) => m.toUpperCase());
+  return s;
+}
+
+async function existsDir(abs: string): Promise<boolean> {
+  try {
+    const st = await fsp.stat(abs);
+    return st.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function readDirTree(dirAbs: string, rel = ""): Promise<DirNode> {
+  const entries = await fsp.readdir(dirAbs, { withFileTypes: true });
+
+  const children: DirNode[] = [];
+  const files: FileNode[] = [];
+
+  for (const e of entries) {
+    if (e.name.startsWith(".")) continue; // hide .DS_Store, etc.
+    const abs = path.join(dirAbs, e.name);
+    const relPath = path.posix.join(rel, e.name.replaceAll("\\", "/"));
+
+    if (e.isDirectory()) {
+      children.push(await readDirTree(abs, relPath));
+    } else if (e.isFile() && /\.pdf$/i.test(e.name)) {
+      const stat = await fsp.stat(abs);
+      files.push({
+        label: humanizeFile(e.name),
+        href: "/guides/" + relPath,
+        sizeBytes: stat.size,
+        mtimeMs: stat.mtimeMs,
+      });
+    }
+  }
+
+  children.sort((a, b) => a.title.localeCompare(b.title));
+  files.sort((a, b) => a.label.localeCompare(b.label));
+
+  return {
+    title: humanizeFolder(path.basename(dirAbs)),
+    children,
+    files,
+  };
+}
+
+async function loadGuides(): Promise<DirNode[]> {
+  if (!(await existsDir(GUIDES_ROOT))) return [];
+
+  const top = await fsp.readdir(GUIDES_ROOT, { withFileTypes: true });
+  const out: DirNode[] = [];
+
+  for (const dir of top) {
+    if (!dir.isDirectory()) continue;
+    if (dir.name.startsWith(".")) continue;
+
+    out.push(await readDirTree(path.join(GUIDES_ROOT, dir.name), dir.name));
+  }
+
+  out.sort((a, b) => a.title.localeCompare(b.title));
+  return out;
+}
+
+export default async function GuidesPage() {
+  const baseUrl = getSiteBaseUrl();
+  const canonical = joinUrl(baseUrl, "/guides");
   const brandName = getBrandName();
-  const lastUpdatedIso = getLastUpdated();
-  const lastUpdatedPretty = formatPrettyDate(lastUpdatedIso);
 
   const supportEmail =
     readEnv("SUPPORT_EMAIL") || readEnv("NEXT_PUBLIC_SUPPORT_EMAIL");
@@ -190,7 +246,7 @@ export default function AccessibilityPage() {
             ...(supportPhone && supportPhone.trim()
               ? { telephone: supportPhone.trim() }
               : {}),
-            contactType: "accessibility support",
+            contactType: "customer support",
           },
         ]
       : undefined;
@@ -215,56 +271,25 @@ export default function AccessibilityPage() {
         "@type": "WebPage",
         "@id": canonical,
         url: canonical,
-        name: "Accessibility Statement",
+        name: "Artwork Setup Guides",
         description:
-          "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.",
+          "Download print-ready PDF templates and file setup guides for every product.",
         isPartOf: { "@id": joinUrl(baseUrl, "/#website") },
         about: { "@id": joinUrl(baseUrl, "/#organization") },
       },
     ],
   };
 
+  const data = await loadGuides();
+
   return (
-    <main className="mx-auto max-w-4xl px-4 py-10">
+    <>
       <script
         type="application/ld+json"
         // eslint-disable-next-line react/no-danger
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
-
-      <header className="rounded-2xl border bg-white p-6">
-        <h1 className="text-3xl font-extrabold">Accessibility Statement</h1>
-        <p className="mt-2 text-sm text-slate-500">
-          Last updated: {lastUpdatedPretty}
-        </p>
-      </header>
-
-      <section className="mt-8 space-y-6 rounded-2xl border bg-white p-6">
-        <p>
-          We want everyone to be able to use our website. Our goal is
-          conformance with <strong>WCAG 2.1 Level AA</strong>.
-        </p>
-
-        <p>
-          If you experience any difficulty accessing content or using features
-          on this site, please let us know and we will work with you to provide
-          the information you need through an accessible communication method.
-        </p>
-
-        <ul className="list-disc pl-6">
-          <li>We test pages for keyboard navigation and screen reader support.</li>
-          <li>We aim for sufficient color contrast and clear focus states.</li>
-          <li>We continuously improve accessibility as the site evolves.</li>
-        </ul>
-
-        <p>
-          The fastest way to reach us is through our{" "}
-          <Link href="/contact" className="text-blue-700 underline">
-            Contact Us
-          </Link>{" "}
-          page.
-        </p>
-      </section>
-    </main>
+      <GuidesClient data={data} />
+    </>
   );
 }

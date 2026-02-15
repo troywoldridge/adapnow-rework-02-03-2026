@@ -4704,3 +4704,205 @@
   font-size: 12px;
   color: #94a3b8;
 }
+
+/* ========================================================================== */
+/* AUTH PAGES + CLERK (GLOBAL)                                                 */
+/* Paste this block near the bottom of globals.css                              */
+/* ========================================================================== */
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  /* Dark slate background, subtle depth */
+  background: radial-gradient(
+      1200px 800px at 50% 30%,
+      rgba(255, 255, 255, 0.06),
+      rgba(0, 0, 0, 0)
+    ),
+    linear-gradient(180deg, #020617, #020617); /* slate-950-ish */
+
+  padding: 24px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16); /* slate-ish */
+  background: rgba(15, 23, 42, 0.7); /* slate-900-ish */
+  backdrop-filter: blur(14px);
+
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+
+  padding: 20px;
+}
+
+@media (max-width: 420px) {
+  .auth-page {
+    padding: 16px;
+  }
+  .auth-card {
+    padding: 16px;
+    border-radius: 14px;
+  }
+}
+
+/* ----------------------------- */
+/* Clerk hook classes (cl-*)     */
+/* ----------------------------- */
+
+/* Container normalization */
+.cl-root {
+  width: 100%;
+}
+
+.cl-card {
+  width: 100%;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+.cl-cardInner {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+}
+
+/* Typography */
+.cl-title {
+  color: rgba(248, 250, 252, 0.98) !important; /* slate-50 */
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+}
+
+.cl-subtitle {
+  color: rgba(203, 213, 225, 0.92) !important; /* slate-300 */
+}
+
+/* Form labels/inputs */
+.cl-label {
+  color: rgba(226, 232, 240, 0.92) !important; /* slate-200 */
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+}
+
+.cl-input {
+  background: rgba(2, 6, 23, 0.6) !important; /* slate-950 */
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  color: rgba(248, 250, 252, 0.98) !important;
+
+  border-radius: 12px !important;
+  padding: 12px 12px !important;
+
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.cl-input::placeholder {
+  color: rgba(148, 163, 184, 0.7) !important;
+}
+
+.cl-input:focus {
+  border-color: rgba(0, 71, 171, 0.7) !important;
+  box-shadow: 0 0 0 4px rgba(0, 71, 171, 0.18) !important;
+}
+
+/* Primary action */
+.cl-primaryButton {
+  background: #0047ab !important;
+  color: #ffffff !important;
+  border-radius: 12px !important;
+
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+
+  padding: 12px 14px !important;
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+
+  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease !important;
+}
+
+.cl-primaryButton:hover {
+  filter: brightness(1.05) !important;
+  box-shadow: 0 10px 30px rgba(0, 71, 171, 0.28) !important;
+}
+
+.cl-primaryButton:active {
+  transform: translateY(1px) !important;
+}
+
+/* Links */
+.cl-link {
+  color: rgba(147, 197, 253, 0.98) !important; /* blue-300 */
+  text-decoration: none !important;
+  font-weight: 600 !important;
+}
+
+.cl-link:hover {
+  text-decoration: underline !important;
+}
+
+/* Social buttons (icon buttons in your config) */
+.cl-socialButton {
+  border-radius: 12px !important;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  background: rgba(2, 6, 23, 0.45) !important;
+
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease !important;
+}
+
+.cl-socialButton:hover {
+  transform: translateY(-1px) !important;
+  border-color: rgba(0, 71, 171, 0.55) !important;
+  background: rgba(2, 6, 23, 0.65) !important;
+}
+
+/* Divider */
+.cl-dividerLine {
+  background: rgba(148, 163, 184, 0.18) !important;
+}
+
+.cl-dividerText {
+  color: rgba(203, 213, 225, 0.9) !important;
+}
+
+/* Alerts */
+.cl-alert {
+  border-radius: 12px !important;
+  border: 1px solid rgba(248, 113, 113, 0.28) !important; /* red */
+  background: rgba(127, 29, 29, 0.25) !important;
+  color: rgba(254, 226, 226, 0.95) !important;
+}
+
+/* “Forgot password”, field actions, etc. */
+.cl-fieldAction {
+  color: rgba(147, 197, 253, 0.98) !important;
+  font-weight: 600 !important;
+}
+
+/* Identity preview (when it appears) */
+.cl-identityPreview {
+  border-radius: 12px !important;
+  border: 1px solid rgba(148, 163, 184, 0.18) !important;
+  background: rgba(2, 6, 23, 0.35) !important;
+}
+
+/* Accessible focus ring for anything clickable inside auth */
+.auth-page :where(a, button, input, [role="button"]) {
+  outline: none;
+}
+
+.auth-page :where(a, button, input, [role="button"]):focus-visible {
+  box-shadow: 0 0 0 4px rgba(0, 71, 171, 0.22);
+  border-radius: 12px;
+}
+

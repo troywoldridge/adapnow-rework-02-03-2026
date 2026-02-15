@@ -1,13 +1,10 @@
-import "server-only";
-
-import type { Metadata, Viewport } from "next";
-import Link from "next/link";
+import type { Metadata } from "next";
 
 function readEnv(key: string): string | null {
   const v = process.env[key];
   if (!v) return null;
   const s = String(v).trim();
-  return s || null;
+  return s ? s : null;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -73,28 +70,38 @@ function getSocialShareImageUrl(baseUrl: string): string | null {
     readEnv("NEXT_PUBLIC_CF_LOGO_ID") ||
     null;
 
+  // Support literal URLs too (if you ever switch away from CF Images IDs)
   const maybeUrl = safeAbsoluteUrlMaybe(id, baseUrl);
   if (maybeUrl) return maybeUrl;
 
   return buildCfImagesUrl(id);
 }
 
-function getBrandName(): string {
-  return readEnv("NEXT_PUBLIC_SITE_NAME") || "ADAP";
+function getPrivacyEmail(): string {
+  // Prefer configurable, but default to your current value
+  return (
+    readEnv("PRIVACY_EMAIL") ||
+    readEnv("NEXT_PUBLIC_PRIVACY_EMAIL") ||
+    "privacy@adap.com"
+  ).trim();
 }
 
 function getLastUpdated(): string {
-  // Recommended env (stable):
-  // ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
-  // NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
+  // Set one of these to a real policy date (recommended):
+  // PRIVACY_POLICY_LAST_UPDATED=2026-02-15
+  // NEXT_PUBLIC_PRIVACY_POLICY_LAST_UPDATED=2026-02-15
+  //
+  // Use ISO date so it's unambiguous and stable.
   return (
-    readEnv("ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
-    readEnv("NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
+    readEnv("PRIVACY_POLICY_LAST_UPDATED") ||
+    readEnv("NEXT_PUBLIC_PRIVACY_POLICY_LAST_UPDATED") ||
     "2026-02-15"
   ).trim();
 }
 
 function formatPrettyDate(iso: string): string {
+  // Lightweight stable formatting without locale randomness.
+  // Expect ISO YYYY-MM-DD; fall back to raw if unexpected.
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m) return iso;
   const year = Number(m[1]);
@@ -119,18 +126,14 @@ function formatPrettyDate(iso: string): string {
   return `${mm} ${day}, ${year}`;
 }
 
-export const viewport: Viewport = {
-  themeColor: "#000000",
-};
-
 export async function generateMetadata(): Promise<Metadata> {
   const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
 
-  const title = "Accessibility | ADAP";
+  const title = "Privacy Policy | American Design And Printing";
   const description =
-    "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.";
+    "Read the Privacy Policy for American Design And Printing (ADAP). Learn how we collect, use, and protect your data.";
 
+  const canonical = joinUrl(baseUrl, "/privacy");
   const ogImage = getSocialShareImageUrl(baseUrl);
 
   return {
@@ -154,7 +157,7 @@ export async function generateMetadata(): Promise<Metadata> {
       url: canonical,
       title,
       description,
-      siteName: getBrandName(),
+      siteName: "American Design And Printing",
       images: ogImage ? [{ url: ogImage }] : undefined,
     },
     twitter: {
@@ -166,34 +169,16 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default function AccessibilityPage() {
+export default function PrivacyPage() {
   const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
+  const canonical = joinUrl(baseUrl, "/privacy");
 
-  const brandName = getBrandName();
+  const brandName =
+    readEnv("NEXT_PUBLIC_SITE_NAME") || "American Design And Printing";
+
+  const privacyEmail = getPrivacyEmail();
   const lastUpdatedIso = getLastUpdated();
   const lastUpdatedPretty = formatPrettyDate(lastUpdatedIso);
-
-  const supportEmail =
-    readEnv("SUPPORT_EMAIL") || readEnv("NEXT_PUBLIC_SUPPORT_EMAIL");
-  const supportPhone =
-    readEnv("SUPPORT_PHONE") || readEnv("NEXT_PUBLIC_SUPPORT_PHONE");
-
-  const contactPoint =
-    (supportEmail && supportEmail.trim()) || (supportPhone && supportPhone.trim())
-      ? [
-          {
-            "@type": "ContactPoint",
-            ...(supportEmail && supportEmail.trim()
-              ? { email: supportEmail.trim() }
-              : {}),
-            ...(supportPhone && supportPhone.trim()
-              ? { telephone: supportPhone.trim() }
-              : {}),
-            contactType: "accessibility support",
-          },
-        ]
-      : undefined;
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -209,15 +194,14 @@ export default function AccessibilityPage() {
         "@id": joinUrl(baseUrl, "/#organization"),
         name: brandName,
         url: baseUrl,
-        ...(contactPoint ? { contactPoint } : {}),
       },
       {
         "@type": "WebPage",
         "@id": canonical,
         url: canonical,
-        name: "Accessibility Statement",
+        name: "Privacy Policy",
         description:
-          "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.",
+          "Read the Privacy Policy for American Design And Printing (ADAP). Learn how we collect, use, and protect your data.",
         isPartOf: { "@id": joinUrl(baseUrl, "/#website") },
         about: { "@id": joinUrl(baseUrl, "/#organization") },
       },
@@ -225,46 +209,62 @@ export default function AccessibilityPage() {
   };
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-10">
+    <main className="container mx-auto px-6 py-12 prose">
       <script
         type="application/ld+json"
         // eslint-disable-next-line react/no-danger
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
 
-      <header className="rounded-2xl border bg-white p-6">
-        <h1 className="text-3xl font-extrabold">Accessibility Statement</h1>
-        <p className="mt-2 text-sm text-slate-500">
-          Last updated: {lastUpdatedPretty}
-        </p>
-      </header>
+      <h1>Privacy Policy</h1>
 
-      <section className="mt-8 space-y-6 rounded-2xl border bg-white p-6">
-        <p>
-          We want everyone to be able to use our website. Our goal is
-          conformance with <strong>WCAG 2.1 Level AA</strong>.
-        </p>
+      <p>
+        <em>Last updated: {lastUpdatedPretty}</em>
+      </p>
 
-        <p>
-          If you experience any difficulty accessing content or using features
-          on this site, please let us know and we will work with you to provide
-          the information you need through an accessible communication method.
-        </p>
+      <p>We respect your privacy and are committed to protecting your data.</p>
 
-        <ul className="list-disc pl-6">
-          <li>We test pages for keyboard navigation and screen reader support.</li>
-          <li>We aim for sufficient color contrast and clear focus states.</li>
-          <li>We continuously improve accessibility as the site evolves.</li>
-        </ul>
+      <h2>What We Collect</h2>
+      <p>
+        We may collect your name, contact details, shipping/billing info, and
+        files you upload for print.
+      </p>
 
-        <p>
-          The fastest way to reach us is through our{" "}
-          <Link href="/contact" className="text-blue-700 underline">
-            Contact Us
-          </Link>{" "}
-          page.
-        </p>
-      </section>
+      <h2>How We Use Your Data</h2>
+      <ul>
+        <li>To process orders and deliver products</li>
+        <li>To provide customer support</li>
+        <li>To improve our services</li>
+      </ul>
+
+      <h2>Data Security</h2>
+      <p>
+        We use encryption, secure servers, and trusted third-party processors to
+        keep your data safe.
+      </p>
+
+      <h2>Third-Party Services</h2>
+      <p>
+        Some orders are fulfilled via trusted partners (like Sinalite). Only the
+        necessary data is shared.
+      </p>
+
+      <h2>Cookies</h2>
+      <p>
+        We use cookies to improve your browsing and shopping experience on our
+        site.
+      </p>
+
+      <h2>Your Rights</h2>
+      <p>
+        You may request access, updates, or deletion of your personal
+        information at any time.
+      </p>
+
+      <p>
+        For privacy concerns, email us at{" "}
+        <a href={`mailto:${privacyEmail}`}>{privacyEmail}</a>.
+      </p>
     </main>
   );
 }

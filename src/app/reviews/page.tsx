@@ -1,13 +1,10 @@
-import "server-only";
-
-import type { Metadata, Viewport } from "next";
-import Link from "next/link";
+import type { Metadata } from "next";
 
 function readEnv(key: string): string | null {
   const v = process.env[key];
   if (!v) return null;
   const s = String(v).trim();
-  return s || null;
+  return s ? s : null;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -24,10 +21,7 @@ function getSiteBaseUrl(): string {
   ).replace(/\/+$/, "");
 }
 
-function safeAbsoluteUrlMaybe(
-  url: string | null | undefined,
-  baseUrl: string
-): string | null {
+function safeAbsoluteUrlMaybe(url: string | null | undefined, baseUrl: string): string | null {
   if (!url) return null;
   const s = String(url).trim();
   if (!s) return null;
@@ -39,6 +33,7 @@ function safeAbsoluteUrlMaybe(
 }
 
 function getCfImagesAccountHash(): string | null {
+  // Prefer a single source, but allow common variations.
   return (
     readEnv("NEXT_PUBLIC_CF_IMAGES_ACCOUNT_HASH") ||
     readEnv("CF_IMAGES_ACCOUNT_HASH") ||
@@ -48,6 +43,7 @@ function getCfImagesAccountHash(): string | null {
 }
 
 function getCfImageVariant(): string {
+  // A dedicated OG variant is best (e.g. 1200x630), but you can change later.
   return (
     readEnv("NEXT_PUBLIC_CF_OG_IMAGE_VARIANT") ||
     readEnv("CF_OG_IMAGE_VARIANT") ||
@@ -67,70 +63,30 @@ function buildCfImagesUrl(imageId: string | null | undefined): string | null {
 }
 
 function getSocialShareImageUrl(baseUrl: string): string | null {
+  // If you set DEFAULT_SOCIAL_SHARE_IMAGE_ID, we use it.
+  // Otherwise fallback to NEXT_PUBLIC_CF_LOGO_ID.
   const id =
     readEnv("DEFAULT_SOCIAL_SHARE_IMAGE_ID") ||
     readEnv("NEXT_PUBLIC_DEFAULT_SOCIAL_SHARE_IMAGE_ID") ||
     readEnv("NEXT_PUBLIC_CF_LOGO_ID") ||
     null;
 
+  // If they provided a literal URL instead of an ID, support it.
   const maybeUrl = safeAbsoluteUrlMaybe(id, baseUrl);
   if (maybeUrl) return maybeUrl;
 
+  // Otherwise treat as Cloudflare Images ID.
   return buildCfImagesUrl(id);
 }
 
-function getBrandName(): string {
-  return readEnv("NEXT_PUBLIC_SITE_NAME") || "ADAP";
-}
-
-function getLastUpdated(): string {
-  // Recommended env (stable):
-  // ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
-  // NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
-  return (
-    readEnv("ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
-    readEnv("NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
-    "2026-02-15"
-  ).trim();
-}
-
-function formatPrettyDate(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return iso;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  const months = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-  ];
-  const mm = months[month - 1];
-  if (!mm || !year || !day) return iso;
-  return `${mm} ${day}, ${year}`;
-}
-
-export const viewport: Viewport = {
-  themeColor: "#000000",
-};
-
 export async function generateMetadata(): Promise<Metadata> {
   const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
 
-  const title = "Accessibility | ADAP";
+  const title = "Customer Reviews | American Design And Printing";
   const description =
-    "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.";
+    "See what customers are saying about American Design And Printing. Share your experience with us!";
 
+  const canonical = joinUrl(baseUrl, "/reviews");
   const ogImage = getSocialShareImageUrl(baseUrl);
 
   return {
@@ -154,7 +110,7 @@ export async function generateMetadata(): Promise<Metadata> {
       url: canonical,
       title,
       description,
-      siteName: getBrandName(),
+      siteName: "American Design And Printing",
       images: ogImage ? [{ url: ogImage }] : undefined,
     },
     twitter: {
@@ -166,18 +122,25 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default function AccessibilityPage() {
+export default function ReviewsPage() {
   const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
+  const canonical = joinUrl(baseUrl, "/reviews");
 
-  const brandName = getBrandName();
-  const lastUpdatedIso = getLastUpdated();
-  const lastUpdatedPretty = formatPrettyDate(lastUpdatedIso);
+  const googleReviewsUrl = readEnv("NEXT_PUBLIC_GOOGLE_REVIEWS_URL");
+  const facebookUrl = readEnv("NEXT_PUBLIC_FACEBOOK_URL");
+  const instagramUrl = readEnv("NEXT_PUBLIC_INSTAGRAM_URL");
+
+  const brandName =
+    readEnv("NEXT_PUBLIC_SITE_NAME") || "American Design And Printing";
 
   const supportEmail =
     readEnv("SUPPORT_EMAIL") || readEnv("NEXT_PUBLIC_SUPPORT_EMAIL");
   const supportPhone =
     readEnv("SUPPORT_PHONE") || readEnv("NEXT_PUBLIC_SUPPORT_PHONE");
+
+  const sameAs = [facebookUrl, instagramUrl].filter(
+    (x): x is string => !!x && !!String(x).trim()
+  );
 
   const contactPoint =
     (supportEmail && supportEmail.trim()) || (supportPhone && supportPhone.trim())
@@ -190,7 +153,7 @@ export default function AccessibilityPage() {
             ...(supportPhone && supportPhone.trim()
               ? { telephone: supportPhone.trim() }
               : {}),
-            contactType: "accessibility support",
+            contactType: "customer support",
           },
         ]
       : undefined;
@@ -209,15 +172,16 @@ export default function AccessibilityPage() {
         "@id": joinUrl(baseUrl, "/#organization"),
         name: brandName,
         url: baseUrl,
+        ...(sameAs.length ? { sameAs } : {}),
         ...(contactPoint ? { contactPoint } : {}),
       },
       {
         "@type": "WebPage",
         "@id": canonical,
         url: canonical,
-        name: "Accessibility Statement",
+        name: "Customer Reviews",
         description:
-          "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.",
+          "See what customers are saying about American Design And Printing. Share your experience with us!",
         isPartOf: { "@id": joinUrl(baseUrl, "/#website") },
         about: { "@id": joinUrl(baseUrl, "/#organization") },
       },
@@ -225,46 +189,77 @@ export default function AccessibilityPage() {
   };
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-10">
+    <main className="container mx-auto px-6 py-12 prose">
       <script
         type="application/ld+json"
         // eslint-disable-next-line react/no-danger
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
 
-      <header className="rounded-2xl border bg-white p-6">
-        <h1 className="text-3xl font-extrabold">Accessibility Statement</h1>
-        <p className="mt-2 text-sm text-slate-500">
-          Last updated: {lastUpdatedPretty}
-        </p>
-      </header>
+      <h1>Customer Reviews</h1>
 
-      <section className="mt-8 space-y-6 rounded-2xl border bg-white p-6">
-        <p>
-          We want everyone to be able to use our website. Our goal is
-          conformance with <strong>WCAG 2.1 Level AA</strong>.
-        </p>
+      <p>
+        We’re just getting started — soon you’ll be able to read and share real
+        experiences from our customers right here.
+      </p>
 
-        <p>
-          If you experience any difficulty accessing content or using features
-          on this site, please let us know and we will work with you to provide
-          the information you need through an accessible communication method.
-        </p>
+      <p>In the meantime, you can:</p>
 
-        <ul className="list-disc pl-6">
-          <li>We test pages for keyboard navigation and screen reader support.</li>
-          <li>We aim for sufficient color contrast and clear focus states.</li>
-          <li>We continuously improve accessibility as the site evolves.</li>
-        </ul>
+      <ul>
+        <li>
+          {googleReviewsUrl ? (
+            <>
+              Leave a review on{" "}
+              <a
+                href={googleReviewsUrl}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+              >
+                Google Reviews
+              </a>
+              .
+            </>
+          ) : (
+            <>
+              Leave a review on <strong>Google Reviews</strong> (link coming soon).
+            </>
+          )}
+        </li>
 
-        <p>
-          The fastest way to reach us is through our{" "}
-          <Link href="/contact" className="text-blue-700 underline">
-            Contact Us
-          </Link>{" "}
-          page.
-        </p>
-      </section>
+        <li>
+          Connect with us on{" "}
+          {facebookUrl ? (
+            <a
+              href={facebookUrl}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+            >
+              Facebook
+            </a>
+          ) : (
+            <strong>Facebook</strong>
+          )}{" "}
+          and{" "}
+          {instagramUrl ? (
+            <a
+              href={instagramUrl}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+            >
+              Instagram
+            </a>
+          ) : (
+            <strong>Instagram</strong>
+          )}
+          .
+        </li>
+
+        <li>
+          Send feedback directly through our <a href="/contact">Contact Page</a>.
+        </li>
+      </ul>
+
+      <p>Your voice helps us grow — thank you for being part of our journey!</p>
     </main>
   );
 }

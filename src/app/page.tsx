@@ -1,52 +1,253 @@
-import Image from "next/image";
+import "server-only";
 
-export default function Home() {
-	return (
-		<div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-			<main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-				<Image className="dark:invert" src="/next.svg" alt="Next.js logo" width={180} height={38} priority />
-				<ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-					<li className="mb-2 tracking-[-.01em]">
-						Get started by editing{" "}
-						<code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-							src/app/page.tsx
-						</code>
-						.
-					</li>
-					<li className="tracking-[-.01em]">Save and see your changes instantly.</li>
-				</ol>
+import type { Metadata, Viewport } from "next";
+import { Suspense } from "react";
 
-				<div className="flex gap-4 items-center flex-col sm:flex-row">
-					<a
-						className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-						href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-						target="_blank"
-						rel="noopener noreferrer"
-					>
-						Read our docs
-					</a>
-				</div>
-			</main>
-			<footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-				<a
-					className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-					href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-					target="_blank"
-					rel="noopener noreferrer"
-				>
-					<Image aria-hidden src="/file.svg" alt="File icon" width={16} height={16} />
-					Learn
-				</a>
-				<a
-					className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-					href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-					target="_blank"
-					rel="noopener noreferrer"
-				>
-					<Image aria-hidden src="/globe.svg" alt="Globe icon" width={16} height={16} />
-					Go to nextjs.org →
-				</a>
-			</footer>
-		</div>
-	);
+import Hero from "@/components/Hero";
+import FeaturedCategories from "@/components/FeaturedCategories";
+import { getLocalCategories } from "@/lib/catalogLocal";
+import SignupPromoCard from "@/components/SignupPromoCard";
+import SalesCards, { type SaleCard } from "@/components/SalesCards";
+import HomeShellClient from "./HomeShellClient";
+
+type LocalCategory = {
+  slug: string;
+  name: string;
+  image?: string | null;
+  description?: string | null;
+};
+
+const SITE_NAME = "American Design And Printing";
+const BRAND = "ADAP";
+const DEFAULT_DESCRIPTION =
+  "Premium print, packaging, and promotional products with reliable turnaround, fair pricing, and real human support.";
+
+const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL || "").trim().replace(/\/+$/, "");
+const METADATA_BASE = SITE_URL ? new URL(SITE_URL) : undefined;
+
+export const metadata: Metadata = {
+  metadataBase: METADATA_BASE,
+  title: {
+    default: `${SITE_NAME} | Print, Packaging & Promotional Products`,
+    template: `%s | ${SITE_NAME}`,
+  },
+  description: DEFAULT_DESCRIPTION,
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    type: "website",
+    url: "/",
+    title: `${SITE_NAME} | Print, Packaging & Promotional Products`,
+    description: DEFAULT_DESCRIPTION,
+    siteName: SITE_NAME,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${SITE_NAME} | Print, Packaging & Promotional Products`,
+    description: DEFAULT_DESCRIPTION,
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-snippet": -1,
+      "max-image-preview": "large",
+      "max-video-preview": -1,
+    },
+  },
+  // Keep keywords restrained; homepage can have a short set.
+  keywords: [
+    "American Design And Printing",
+    "ADAP",
+    "custom printing",
+    "business cards",
+    "postcards",
+    "banners",
+    "signage",
+    "packaging",
+    "promotional products",
+  ],
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0f172a",
+};
+
+function buildJsonLd() {
+  const org = {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: SITE_NAME,
+    alternateName: BRAND,
+    url: SITE_URL || undefined,
+    description: DEFAULT_DESCRIPTION,
+  };
+
+  const website = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: SITE_NAME,
+    url: SITE_URL || undefined,
+    publisher: {
+      "@type": "Organization",
+      name: SITE_NAME,
+    },
+    // If/when you add on-site search, wire this up:
+    // potentialAction: {
+    //   "@type": "SearchAction",
+    //   target: `${SITE_URL}/search?q={search_term_string}`,
+    //   "query-input": "required name=search_term_string",
+    // },
+  };
+
+  const webpage = {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: `${SITE_NAME} | Print, Packaging & Promotional Products`,
+    url: SITE_URL ? `${SITE_URL}/` : undefined,
+    description: DEFAULT_DESCRIPTION,
+    isPartOf: {
+      "@type": "WebSite",
+      name: SITE_NAME,
+      url: SITE_URL || undefined,
+    },
+    about: {
+      "@type": "Organization",
+      name: SITE_NAME,
+    },
+  };
+
+  return [org, website, webpage];
+}
+
+export default function HomePage() {
+  const categories = getLocalCategories() as LocalCategory[];
+
+  // Keep featured categories stable and intentional (SEO + UX)
+  const featuredSlugs = ["business-cards", "large-format", "print-products"];
+  const featured = featuredSlugs
+    .map((slug) => categories.find((c) => c.slug === slug) || null)
+    .filter((c): c is LocalCategory => !!c)
+    .map((c) => ({
+      slug: c.slug,
+      name: c.name,
+      imageUrl: c.image ?? "",
+      href: `/categories/${c.slug}`,
+      description: c.description ?? undefined,
+    }));
+
+  const promos: SaleCard[] = [
+    {
+      id: "foam-board",
+      name: "Foam Board",
+      href: "/products/foam-board",
+      imageUrl:
+        "https://imagedelivery.net/pJ0fKvjCAbyoF8aD0BGu8Q/e02bbfd1-7096-4c3b-9c50-61b5a7d26100/saleCard",
+      discountLabel: "10% OFF",
+    },
+    {
+      id: "door-hangers",
+      name: "Door Hangers",
+      href: "/products/door-hangers",
+      imageUrl:
+        "https://imagedelivery.net/pJ0fKvjCAbyoF8aD0BGu8Q/49701951-43d8-4abc-5dcc-2101ef4cdd00/saleCard",
+      discountLabel: "10% OFF",
+    },
+    {
+      id: "soft-touch-bc",
+      name: "Soft Touch Business Cards",
+      href: "/products/soft-touch-business-cards",
+      imageUrl:
+        "https://imagedelivery.net/pJ0fKvjCAbyoF8aD0BGu8Q/0053681e-2792-4571-ef75-b844fd438400/saleCard",
+      discountLabel: "10% OFF",
+    },
+  ];
+
+  const jsonLd = buildJsonLd();
+
+  return (
+    <HomeShellClient>
+      <main id="main">
+        {/* Structured data for Google */}
+        {jsonLd.map((obj, idx) => (
+          <script
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(obj) }}
+            key={idx}
+            type="application/ld+json"
+          />
+        ))}
+
+        {/* If Hero already renders an H1, this is harmless (SR-only would be redundant),
+            but it’s safer to ensure the page has one. */}
+        <h1 className="sr-only">
+          {SITE_NAME} ({BRAND}) — Print, Packaging & Promotional Products
+        </h1>
+
+        {/* Signup promo (client) */}
+        <section aria-label="Promotions">
+          <Suspense fallback={<div className="sr-only">Loading promotions…</div>}>
+            <SignupPromoCard />
+          </Suspense>
+        </section>
+
+        {/* Hero */}
+        <section aria-label="Hero">
+          <Suspense
+            fallback={
+              <div className="mx-auto max-w-7xl px-4 py-10" aria-hidden="true">
+                <div className="h-[280px] rounded-2xl bg-gray-100 animate-pulse" />
+              </div>
+            }
+          >
+            <Hero />
+          </Suspense>
+        </section>
+
+        {/* Sales / featured promos */}
+        <section aria-label="Featured deals">
+          <Suspense
+            fallback={
+              <div className="mx-auto max-w-7xl px-4 pt-8" aria-hidden="true">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {[0, 1, 2].map((i) => (
+                    <div key={i} className="h-40 rounded-xl bg-gray-100 animate-pulse" />
+                  ))}
+                </div>
+              </div>
+            }
+          >
+            <SalesCards items={promos} />
+          </Suspense>
+        </section>
+
+        {/* Categories */}
+        <section className="pt-10" aria-labelledby="shop-by-category">
+          <div className="mx-auto max-w-7xl px-4">
+            <h2 id="shop-by-category" className="text-center text-xl font-semibold text-slate-900 mb-6">
+              Shop by Category
+            </h2>
+
+            <Suspense fallback={<div className="h-56 bg-gray-100 animate-pulse rounded-xl" aria-hidden="true" />}>
+              <FeaturedCategories categories={featured} limit={3} />
+            </Suspense>
+
+            {/* Crawlable internal links (helps discovery even if components are heavy) */}
+            <nav className="sr-only" aria-label="Featured category links">
+              <ul>
+                {featured.map((c) => (
+                  <li key={c.slug}>
+                    <a href={c.href}>{c.name}</a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          </div>
+        </section>
+      </main>
+    </HomeShellClient>
+  );
 }

@@ -1,0 +1,350 @@
+import "server-only";
+
+import Link from "next/link";
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
+
+import categoryAssets from "@/data/categoryAssets.json";
+import subcategoryAssets from "@/data/subcategoryAssets.json";
+import productAssets from "@/data/productAssets.json";
+import { cfImage } from "@/lib/cfImages";
+
+/* ---------------- Types ---------------- */
+type Category = {
+  id?: number | string | null;
+  slug: string;
+  name?: string | null;
+  description?: string | null;
+};
+
+type Subcategory = {
+  id?: number | string | null;
+  subcategory_id?: number | string | null;
+  category_id?: number | string | null;
+  category_slug?: string | null;
+  slug?: string | null;
+  name: string;
+  description?: string | null;
+  cf_image_id?: string | null;
+  sort_order?: number | string | null;
+};
+
+type ProductRow = {
+  id?: number | string | null;
+  sku?: string | null;
+  name?: string | null;
+  product_slug?: string | null;
+  slug?: string | null;
+  category_id?: number | string | null;
+  category_slug?: string | null;
+  subcategory_id?: number | string | null;
+  subcategory_slug?: string | null;
+  cf_image_1_id?: string | null;
+  [k: string]: any;
+};
+
+/* ---------------- Site ---------------- */
+const SITE_NAME = "American Design And Printing";
+const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL || "https://adapnow.com").trim().replace(/\/+$/, "");
+const METADATA_BASE = SITE_URL ? new URL(SITE_URL) : undefined;
+
+function absUrl(path: string) {
+  return `${SITE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/* ---------------- Utils ---------------- */
+function toNum(n: unknown): number | null {
+  const s = n == null ? "" : String(n).trim();
+  if (!s) return null;
+  const v = Number(s);
+  return Number.isFinite(v) ? v : null;
+}
+
+function toSlug(s?: string | null) {
+  return (s || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function titleCase(s?: string | null) {
+  return (s || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Try to make a nice label from a product's slug/name, removing the category prefix. */
+function labelFromProduct(p: ProductRow, categorySlug: string, fallback: string): string {
+  const sc = (p.subcategory_slug || "").trim();
+  if (sc) return titleCase(sc);
+
+  const base = (p.slug || p.product_slug || p.name || "").toString().toLowerCase().trim();
+  if (base) {
+    const prefix = `${categorySlug.toLowerCase().trim()}-`;
+    const rest = base.startsWith(prefix) ? base.slice(prefix.length) : base;
+    const parts = rest.split(/[-\s]+/).filter(Boolean);
+    if (parts.length) {
+      const take = parts.slice(0, Math.min(3, parts.length)).join(" ");
+      return titleCase(take);
+    }
+  }
+
+  return titleCase(fallback);
+}
+
+/** Build a stable key AND a friendly label. */
+function productDerivedSubKey(p: ProductRow, categorySlug: string): { key: string; label: string } {
+  if ((p.subcategory_slug || "").trim()) {
+    const key = toSlug(p.subcategory_slug!);
+    return { key, label: titleCase(p.subcategory_slug) };
+  }
+
+  const sid = toNum(p.subcategory_id);
+  if (sid != null) {
+    const key = `sub-${sid}`;
+    const label = labelFromProduct(p, categorySlug, String(sid));
+    return { key, label };
+  }
+
+  const base = (p.slug || p.product_slug || "").toLowerCase();
+  const prefix = `${categorySlug}-`;
+  const rest = base.startsWith(prefix) ? base.slice(prefix.length) : base;
+  const parts = rest.split("-").filter(Boolean);
+  const picked = parts.slice(0, Math.min(2, parts.length)).join("-");
+  return { key: picked || "general", label: titleCase(picked || "General") };
+}
+
+function ensureSubSlug(s: Subcategory): string {
+  const id = toNum(s.subcategory_id) ?? toNum(s.id);
+  return (s.slug && s.slug.trim()) || toSlug(s.name) || (id ? `sub-${id}` : "subcategory");
+}
+
+function buildPath(categorySlug: string) {
+  return `/categories/${categorySlug}`;
+}
+
+/* ---------------- SEO ---------------- */
+export async function generateMetadata({
+  params,
+}: {
+  params: { categorySlug: string };
+}): Promise<Metadata> {
+  const { categorySlug } = params;
+
+  const cats = categoryAssets as Category[];
+  const cat = cats.find((c) => c.slug === categorySlug);
+  if (!cat) {
+    return {
+      title: "Category Not Found",
+      robots: { index: false, follow: false },
+    };
+  }
+
+  const readableCat = titleCase(cat.name ?? categorySlug);
+  const desc =
+    cat.description ||
+    `Browse ${readableCat} subcategories and products from ${SITE_NAME}. Configure items for live pricing and fast delivery.`;
+
+  const canonical = buildPath(categorySlug);
+
+  return {
+    metadataBase: METADATA_BASE,
+    title: {
+      default: `${readableCat} | ${SITE_NAME}`,
+      template: `%s | ${SITE_NAME}`,
+    },
+    description: desc,
+    alternates: { canonical },
+    robots: {
+      index: true,
+      follow: true,
+      googleBot: { index: true, follow: true, "max-snippet": -1, "max-image-preview": "large", "max-video-preview": -1 },
+    },
+    openGraph: {
+      type: "website",
+      title: `${readableCat} | ${SITE_NAME}`,
+      description: desc,
+      url: canonical,
+      siteName: SITE_NAME,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: `${readableCat} | ${SITE_NAME}`,
+      description: desc,
+    },
+  };
+}
+
+/* ---------------- PAGE ---------------- */
+export default async function CategoryPage({
+  params,
+}: {
+  params: { categorySlug: string };
+}) {
+  const { categorySlug } = params;
+
+  const cats = categoryAssets as Category[];
+  const subs = subcategoryAssets as Subcategory[];
+  const prods = productAssets as ProductRow[];
+
+  const cat = cats.find((c) => c.slug === categorySlug);
+  if (!cat) return notFound();
+
+  const readableCat = titleCase(cat.name ?? categorySlug);
+  const catId = toNum(cat.id);
+
+  // A) Use real subcategory assets when present
+  let subPool: Subcategory[] = subs
+    .filter(
+      (s) =>
+        (s.category_slug || "").trim() === cat.slug ||
+        (toNum(s.category_id) !== null && toNum(s.category_id) === catId)
+    )
+    .sort((a, b) => {
+      const ao = Number(a.sort_order ?? 9999);
+      const bo = Number(b.sort_order ?? 9999);
+      if (ao !== bo) return ao - bo;
+      return a.name.localeCompare(b.name);
+    });
+
+  // B) Fallback: derive subcategories from products with HUMAN labels
+  if (subPool.length === 0) {
+    const inCat = prods.filter(
+      (p) =>
+        (p.category_slug || "").trim() === cat.slug ||
+        (toNum(p.category_id) !== null && toNum(p.category_id) === catId)
+    );
+
+    const groups = new Map<string, { slug: string; name: string; cf_image_id?: string | null; count: number }>();
+
+    for (const p of inCat) {
+      const { key, label } = productDerivedSubKey(p, categorySlug);
+      const img = (p.cf_image_1_id || "").trim() || undefined;
+
+      const g = groups.get(key);
+      if (g) {
+        g.count += 1;
+        if (/^\d+$/.test(g.name) && !/^\d+$/.test(label)) g.name = label;
+        if (!g.cf_image_id && img) g.cf_image_id = img;
+      } else {
+        groups.set(key, { slug: key, name: label, cf_image_id: img ?? null, count: 1 });
+      }
+    }
+
+    subPool = Array.from(groups.values())
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .map((g) => ({
+        id: null,
+        subcategory_id: null,
+        category_id: cat.id ?? null,
+        category_slug: cat.slug,
+        slug: g.slug,
+        name: g.name,
+        description: null,
+        cf_image_id: g.cf_image_id ?? null,
+        sort_order: null,
+      }));
+  }
+
+  const canonicalPath = buildPath(categorySlug);
+
+  const breadcrumbJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Home", item: absUrl("/") },
+      { "@type": "ListItem", position: 2, name: readableCat, item: absUrl(canonicalPath) },
+    ],
+  };
+
+  const itemListJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    itemListElement: subPool.map((s, i) => {
+      const subSlug = ensureSubSlug(s);
+      const url = absUrl(`/categories/${categorySlug}/${subSlug}`);
+      const img = s.cf_image_id ? (cfImage(s.cf_image_id, "subcategoryThumb" as any) as any) : undefined;
+
+      return {
+        "@type": "ListItem",
+        position: i + 1,
+        name: s.name,
+        url,
+        image: img,
+      };
+    }),
+  };
+
+  return (
+    <main className="mx-auto max-w-7xl px-4 py-8">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(itemListJsonLd) }} />
+
+      <nav className="mb-6 text-sm text-gray-600" aria-label="Breadcrumb">
+        <ol className="flex flex-wrap items-center gap-1">
+          <li>
+            <Link className="hover:underline" href="/">
+              Home
+            </Link>
+          </li>
+          <li aria-hidden="true">/</li>
+          <li aria-current="page" className="text-gray-900 font-medium">
+            {readableCat}
+          </li>
+        </ol>
+      </nav>
+
+      <header className="mb-8">
+        <h1 className="text-2xl md:text-3xl font-semibold">{readableCat}</h1>
+        {cat.description ? (
+          <p className="mt-2 max-w-3xl text-gray-600">{cat.description}</p>
+        ) : (
+          <p className="mt-2 max-w-3xl text-gray-600">
+            Choose a subcategory to continue. Configure products for live pricing and production-ready specs.
+          </p>
+        )}
+      </header>
+
+      {subPool.length === 0 ? (
+        <div className="rounded-lg border p-6 text-gray-600">No subcategories found.</div>
+      ) : (
+        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 list-none" aria-label={`${readableCat} subcategories`}>
+          {subPool.map((s) => {
+            const subSlug = ensureSubSlug(s);
+            const img = s.cf_image_id ? (cfImage(s.cf_image_id, "subcategoryThumb" as any) as any) : "";
+
+            return (
+              <li key={subSlug}>
+                <Link
+                  href={`/categories/${categorySlug}/${subSlug}`}
+                  className="block rounded-xl overflow-hidden bg-white border shadow-sm hover:shadow-md transition"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {img ? (
+                    <img
+                      src={img}
+                      alt={titleCase(s.name)}
+                      className="w-full aspect-[4/3] object-cover"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  ) : (
+                    <div className="w-full aspect-[4/3] bg-gray-100" />
+                  )}
+
+                  <div className="p-4">
+                    <div className="font-medium text-gray-900">{titleCase(s.name)}</div>
+                    {s.description ? <p className="text-gray-600 text-sm mt-1">{s.description}</p> : null}
+                  </div>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </main>
+  );
+}

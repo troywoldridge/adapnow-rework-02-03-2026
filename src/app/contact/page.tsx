@@ -1,13 +1,10 @@
-import "server-only";
-
-import type { Metadata, Viewport } from "next";
-import Link from "next/link";
+import type { Metadata } from "next";
 
 function readEnv(key: string): string | null {
   const v = process.env[key];
   if (!v) return null;
   const s = String(v).trim();
-  return s || null;
+  return s ? s : null;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -80,56 +77,54 @@ function getSocialShareImageUrl(baseUrl: string): string | null {
 }
 
 function getBrandName(): string {
-  return readEnv("NEXT_PUBLIC_SITE_NAME") || "ADAP";
+  return readEnv("NEXT_PUBLIC_SITE_NAME") || "American Design And Printing";
 }
 
-function getLastUpdated(): string {
-  // Recommended env (stable):
-  // ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
-  // NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED=2026-02-15
-  return (
-    readEnv("ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
-    readEnv("NEXT_PUBLIC_ACCESSIBILITY_STATEMENT_LAST_UPDATED") ||
-    "2026-02-15"
-  ).trim();
+function getSupportEmail(): string {
+  return (readEnv("SUPPORT_EMAIL") || readEnv("NEXT_PUBLIC_SUPPORT_EMAIL") || "support@adap.com").trim();
 }
 
-function formatPrettyDate(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return iso;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  const months = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-  ];
-  const mm = months[month - 1];
-  if (!mm || !year || !day) return iso;
-  return `${mm} ${day}, ${year}`;
+function getSupportPhone(): string | null {
+  const v = readEnv("SUPPORT_PHONE") || readEnv("NEXT_PUBLIC_SUPPORT_PHONE");
+  return v ? v.trim() : null;
 }
 
-export const viewport: Viewport = {
-  themeColor: "#000000",
-};
+function getAddressLines(): string[] {
+  // Recommended envs:
+  // BUSINESS_ADDRESS_LINE1=171 Main St
+  // BUSINESS_ADDRESS_LINE2=Suite 100 (optional)
+  // BUSINESS_CITY=Vanceburg
+  // BUSINESS_STATE=KY
+  // BUSINESS_POSTAL=41179
+  // BUSINESS_COUNTRY=US (optional)
+  const line1 = readEnv("BUSINESS_ADDRESS_LINE1");
+  const line2 = readEnv("BUSINESS_ADDRESS_LINE2");
+  const city = readEnv("BUSINESS_CITY");
+  const state = readEnv("BUSINESS_STATE");
+  const postal = readEnv("BUSINESS_POSTAL");
+  const country = readEnv("BUSINESS_COUNTRY");
+
+  const lines: string[] = [];
+  lines.push(getBrandName());
+
+  if (line1) lines.push(line1);
+  if (line2) lines.push(line2);
+
+  const cityLine = [city, state, postal].filter(Boolean).join(" ");
+  if (cityLine) lines.push(cityLine);
+
+  if (country) lines.push(country);
+
+  return lines;
+}
 
 export async function generateMetadata(): Promise<Metadata> {
   const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
+  const canonical = joinUrl(baseUrl, "/contact");
 
-  const title = "Accessibility | ADAP";
+  const title = "Contact Us | American Design And Printing";
   const description =
-    "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.";
+    "Get in touch with American Design And Printing (ADAP). We’d love to hear from you!";
 
   const ogImage = getSocialShareImageUrl(baseUrl);
 
@@ -166,18 +161,20 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default function AccessibilityPage() {
+export default function ContactPage() {
   const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, "/accessibility");
+  const canonical = joinUrl(baseUrl, "/contact");
 
   const brandName = getBrandName();
-  const lastUpdatedIso = getLastUpdated();
-  const lastUpdatedPretty = formatPrettyDate(lastUpdatedIso);
+  const supportEmail = getSupportEmail();
+  const supportPhone = getSupportPhone();
+  const addressLines = getAddressLines();
 
-  const supportEmail =
-    readEnv("SUPPORT_EMAIL") || readEnv("NEXT_PUBLIC_SUPPORT_EMAIL");
-  const supportPhone =
-    readEnv("SUPPORT_PHONE") || readEnv("NEXT_PUBLIC_SUPPORT_PHONE");
+  const facebookUrl = readEnv("NEXT_PUBLIC_FACEBOOK_URL");
+  const instagramUrl = readEnv("NEXT_PUBLIC_INSTAGRAM_URL");
+  const sameAs = [facebookUrl, instagramUrl].filter(
+    (x): x is string => !!x && !!String(x).trim()
+  );
 
   const contactPoint =
     (supportEmail && supportEmail.trim()) || (supportPhone && supportPhone.trim())
@@ -190,7 +187,7 @@ export default function AccessibilityPage() {
             ...(supportPhone && supportPhone.trim()
               ? { telephone: supportPhone.trim() }
               : {}),
-            contactType: "accessibility support",
+            contactType: "customer support",
           },
         ]
       : undefined;
@@ -209,15 +206,14 @@ export default function AccessibilityPage() {
         "@id": joinUrl(baseUrl, "/#organization"),
         name: brandName,
         url: baseUrl,
+        ...(sameAs.length ? { sameAs } : {}),
         ...(contactPoint ? { contactPoint } : {}),
       },
       {
-        "@type": "WebPage",
+        "@type": "ContactPage",
         "@id": canonical,
         url: canonical,
-        name: "Accessibility Statement",
-        description:
-          "ADAP is committed to digital accessibility. Learn about our WCAG conformance, compatibility, feedback options, and ongoing improvements.",
+        name: "Contact Us",
         isPartOf: { "@id": joinUrl(baseUrl, "/#website") },
         about: { "@id": joinUrl(baseUrl, "/#organization") },
       },
@@ -225,46 +221,39 @@ export default function AccessibilityPage() {
   };
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-10">
+    <main className="container mx-auto px-6 py-12 prose">
       <script
         type="application/ld+json"
         // eslint-disable-next-line react/no-danger
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
 
-      <header className="rounded-2xl border bg-white p-6">
-        <h1 className="text-3xl font-extrabold">Accessibility Statement</h1>
-        <p className="mt-2 text-sm text-slate-500">
-          Last updated: {lastUpdatedPretty}
-        </p>
-      </header>
+      <h1>Contact Us</h1>
+      <p>We’d love to hear from you! Reach us through the options below:</p>
 
-      <section className="mt-8 space-y-6 rounded-2xl border bg-white p-6">
-        <p>
-          We want everyone to be able to use our website. Our goal is
-          conformance with <strong>WCAG 2.1 Level AA</strong>.
-        </p>
+      <h2>Address</h2>
+      <p>
+        {addressLines.map((line, idx) => (
+          <span key={idx}>
+            {line}
+            <br />
+          </span>
+        ))}
+      </p>
 
-        <p>
-          If you experience any difficulty accessing content or using features
-          on this site, please let us know and we will work with you to provide
-          the information you need through an accessible communication method.
-        </p>
+      <h2>Phone</h2>
+      {supportPhone ? <p>{supportPhone}</p> : <p>Phone number coming soon.</p>}
 
-        <ul className="list-disc pl-6">
-          <li>We test pages for keyboard navigation and screen reader support.</li>
-          <li>We aim for sufficient color contrast and clear focus states.</li>
-          <li>We continuously improve accessibility as the site evolves.</li>
-        </ul>
+      <h2>Email</h2>
+      <p>
+        <a href={`mailto:${supportEmail}`}>{supportEmail}</a>
+      </p>
 
-        <p>
-          The fastest way to reach us is through our{" "}
-          <Link href="/contact" className="text-blue-700 underline">
-            Contact Us
-          </Link>{" "}
-          page.
-        </p>
-      </section>
+      <h2>Online Form</h2>
+      <p>
+        You can also reach out through our <a href="/contact/form">contact form</a>,
+        and we’ll respond within 1 business day.
+      </p>
     </main>
   );
 }
