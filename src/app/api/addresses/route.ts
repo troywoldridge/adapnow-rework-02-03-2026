@@ -1,42 +1,77 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+
 import { listAddresses, createAddress } from "@/lib/addresses";
 import { requireValidAddress } from "@/lib/addressValidation";
+import { apiError } from "@/lib/apiError";
+import { getRequestId } from "@/lib/requestId";
+import { withRequestId } from "@/lib/logger";
+import { enforcePolicy } from "@/lib/authzPolicy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-function jsonError(status: number, message: string) {
-  return NextResponse.json({ error: message }, { status });
+function noStoreHeaders() {
+  return {
+    "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    pragma: "no-cache",
+    expires: "0",
+  } as const;
 }
 
-async function readJson(req: Request): Promise<any> {
+function jsonOk(requestId: string, extra?: Record<string, unknown>, status = 200) {
+  return NextResponse.json({ ok: true as const, requestId, ...(extra || {}) }, { status, headers: noStoreHeaders() });
+}
+
+function jsonErr(status: number, code: string, message: string, requestId: string, details?: unknown) {
+  return NextResponse.json(apiError(status, code, message, { requestId, details }), {
+    status,
+    headers: noStoreHeaders(),
+  });
+}
+
+async function readJson(req: NextRequest): Promise<any | null> {
   try {
+    const ct = (req.headers.get("content-type") || "").toLowerCase();
+    if (!ct.includes("application/json")) return null;
     return await req.json();
   } catch {
     return null;
   }
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const requestId = getRequestId(req);
+  const log = withRequestId(requestId);
+
+  const guard = await enforcePolicy(req, { kind: "auth" });
+  if (!guard.ok) return guard.res;
+
   try {
     const rows = await listAddresses();
-    return NextResponse.json({ addresses: rows });
-  } catch (err) {
-    if (err instanceof Response) return err;
-    return jsonError(500, "Failed to list addresses");
+    return jsonOk(requestId, { addresses: rows }, 200);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Failed to list addresses";
+    log.error("List addresses failed", { message, requestId });
+    return jsonErr(500, "INTERNAL_ERROR", "Failed to list addresses", requestId);
   }
 }
 
-export async function POST(req: Request) {
-  try {
-    const body = await readJson(req);
-    if (!body || typeof body !== "object") {
-      return jsonError(400, "Invalid JSON body");
-    }
+export async function POST(req: NextRequest) {
+  const requestId = getRequestId(req);
+  const log = withRequestId(requestId);
 
-    // Validate required address fields
+  const guard = await enforcePolicy(req, { kind: "auth" });
+  if (!guard.ok) return guard.res;
+
+  const body = await readJson(req);
+  if (!body || typeof body !== "object") {
+    return jsonErr(400, "BAD_REQUEST", "Invalid JSON body (expected application/json)", requestId);
+  }
+
+  try {
     const normalized = requireValidAddress(
       {
         label: body.label ?? null,
@@ -61,7 +96,7 @@ export async function POST(req: Request) {
       lastName: normalized.lastName,
       company: normalized.company,
       email: normalized.email,
-      phone: normalized.phone, // plaintext allowed here; lib encrypts into phone_enc/last4
+      phone: normalized.phone,
 
       street1: normalized.street1,
       street2: normalized.street2,
@@ -77,14 +112,16 @@ export async function POST(req: Request) {
       metadata: body.metadata ?? undefined,
     });
 
-    return NextResponse.json({ address: row }, { status: 201 });
-  } catch (err) {
-    if (err instanceof Response) return err;
-
+    return jsonOk(requestId, { address: row }, 201);
+  } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "";
-    // If validation threw "field: message", return a 422
-    if (msg.includes(":")) return jsonError(422, msg);
 
-    return jsonError(500, "Failed to create address");
+    // Address validation typically throws field-ish messages; treat as 422.
+    if (msg && msg.includes(":")) {
+      return jsonErr(422, "VALIDATION_ERROR", msg, requestId);
+    }
+
+    log.error("Create address failed", { message: msg || "Failed to create address", requestId });
+    return jsonErr(500, "INTERNAL_ERROR", "Failed to create address", requestId);
   }
 }
