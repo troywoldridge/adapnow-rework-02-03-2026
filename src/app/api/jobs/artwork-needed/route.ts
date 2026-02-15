@@ -1,12 +1,11 @@
 import "server-only";
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 import { scanAndSendArtworkNeededEmails } from "@/lib/artwork/artworkNeeded";
-import { apiError } from "@/lib/apiError";
-import { getRequestId } from "@/lib/requestId";
+import { ApiError, ok, fail, getRequestIdFromHeaders, readJson } from "@/lib/apiError";
 import { withRequestId } from "@/lib/logger";
-import { enforcePolicy } from "@/lib/authzPolicy";
+import { enforcePolicy, logAuthzDenial } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,46 +19,56 @@ function noStoreHeaders() {
   } as const;
 }
 
+function withNoStore(res: Response) {
+  const hs = noStoreHeaders();
+  for (const [k, v] of Object.entries(hs)) (res as any).headers?.set?.(k, v);
+  return res;
+}
+
 function toFiniteNumber(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getRequestId(req);
+  const requestId = getRequestIdFromHeaders(req.headers);
   const log = withRequestId(requestId);
 
-  const guard = await enforcePolicy(req, { kind: "cron" });
-  if (!guard.ok) return guard.res;
-
-  let body: any = {};
-  try {
-    const ct = (req.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("application/json")) {
-      body = await req.json().catch(() => ({}));
-    }
-  } catch {
-    body = {};
-  }
-
-  const lookbackHours = toFiniteNumber(body?.lookbackHours);
-  const limit = toFiniteNumber(body?.limit);
-
-  const args = {
-    lookbackHours: lookbackHours != null ? Math.max(1, Math.floor(lookbackHours)) : 72,
-    limit: limit != null ? Math.max(1, Math.floor(limit)) : 50,
-  };
+  const POLICY = "cron" as const;
 
   try {
+    const ctx = await enforcePolicy(req, POLICY);
+
+    // Optional JSON body (cron callers may omit it)
+    const body = (await readJson<any>(req).catch(() => null)) || {};
+
+    const lookbackHours = toFiniteNumber(body?.lookbackHours);
+    const limit = toFiniteNumber(body?.limit);
+
+    const args = {
+      lookbackHours: lookbackHours != null ? Math.max(1, Math.floor(lookbackHours)) : 72,
+      limit: limit != null ? Math.max(1, Math.floor(limit)) : 50,
+    };
+
     const result = await scanAndSendArtworkNeededEmails(args);
-    return NextResponse.json({ ok: true as const, requestId, ...result }, { status: 200, headers: noStoreHeaders() });
+
+    const res = ok(result, { requestId: ctx.requestId });
+    return withNoStore(res);
   } catch (e: unknown) {
+    // Only log authz denials as authz
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      logAuthzDenial({
+        req,
+        policy: POLICY,
+        requestId,
+        reason: e.message,
+      });
+    }
+
     const message = e instanceof Error ? e.message : "Failed to run artwork-needed job";
     log.error("Artwork-needed job failed", { message, requestId });
 
-    return NextResponse.json(apiError(500, "INTERNAL_ERROR", message, { requestId }), {
-      status: 500,
-      headers: noStoreHeaders(),
-    });
+    const res = fail(e, { requestId });
+    return withNoStore(res);
   }
 }

@@ -491,8 +491,8 @@
 ---
 
 ## Master Checklist
-- [ ] Stage 1 baseline stabilized and checks green.
-- [ ] Stage 2 authz model unified and route policy matrix enforced.
+- [x] Stage 1 baseline stabilized and checks green.
+- [x] Stage 2 authz model unified and route policy matrix enforced.
 - [ ] Stage 3 schema/migration workflow consolidated and legacy migration paths deprecated.
 - [ ] Stage 4 cart/pricing/upload domain hardened with typed contracts and compatibility strategy.
 - [ ] Stage 5 observability/testing maturity complete and deprecated modules removed.

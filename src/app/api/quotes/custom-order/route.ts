@@ -1,12 +1,11 @@
 import "server-only";
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { Pool } from "pg";
 
-import { enforcePolicy } from "@/lib/authzPolicy";
-import { apiError } from "@/lib/apiError";
-import { getRequestId } from "@/lib/requestId";
+import { ApiError, ok, fail, getRequestIdFromHeaders, readJson } from "@/lib/apiError";
 import { withRequestId } from "@/lib/logger";
+import { enforcePolicy, logAuthzDenial } from "@/lib/auth";
 import {
   getResendClient,
   getInvoicesFromEmail,
@@ -35,22 +34,10 @@ function noStoreHeaders() {
   } as const;
 }
 
-function jsonOk(requestId: string, extra?: Record<string, unknown>) {
-  return NextResponse.json({ ok: true as const, requestId, ...(extra || {}) }, { headers: noStoreHeaders() });
-}
-
-function jsonErr(
-  status: number,
-  code: string,
-  message: string,
-  requestId: string,
-  details?: unknown,
-  headers?: Record<string, string>,
-) {
-  return NextResponse.json(apiError(status, code, message, { requestId, details }), {
-    status,
-    headers: { ...noStoreHeaders(), ...(headers || {}) },
-  });
+function withNoStore(res: Response) {
+  const hs = noStoreHeaders();
+  for (const [k, v] of Object.entries(hs)) (res as any).headers?.set?.(k, v);
+  return res;
 }
 
 function getPool(): Pool {
@@ -71,7 +58,7 @@ function s(v: unknown, max = 5000): string {
 function requireEmail(raw: unknown): string {
   const email = s(raw, 320).toLowerCase();
   if (!email || !email.includes("@") || email.startsWith("@") || email.endsWith("@")) {
-    throw new Error("Invalid email");
+    throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Invalid email" });
   }
   return email;
 }
@@ -114,10 +101,12 @@ function rateLimitOrThrow(ip: string) {
   row.count += 1;
   if (row.count > MAX) {
     const retrySeconds = Math.max(1, Math.ceil((row.resetAt - now) / 1000));
-    const err: any = new Error("Too many requests. Please try again shortly.");
-    err.status = 429;
-    err.retryAfter = retrySeconds;
-    throw err;
+    throw new ApiError({
+      status: 429,
+      code: "RATE_LIMITED",
+      message: "Too many requests. Please try again shortly.",
+      details: { retryAfter: retrySeconds },
+    });
   }
 }
 
@@ -264,248 +253,247 @@ function internalHtml(args: Record<string, string>) {
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getRequestId(req);
+  const requestId = getRequestIdFromHeaders(req.headers);
   const log = withRequestId(requestId);
 
-  // Stage 2: policy boundary (public route, but standardized)
-  const guard = await enforcePolicy(req, { kind: "public" });
-  if (!guard.ok) return guard.res;
+  const POLICY = "public" as const;
 
   const h = new Headers(req.headers);
   const ua = s(h.get("user-agent") || "", 800);
   const ip = s(ipFromHeaders(h), 120);
 
   try {
+    await enforcePolicy(req, POLICY);
+
+    // Rate limit
     rateLimitOrThrow(ip);
-  } catch (e: any) {
-    const retryAfter = e?.retryAfter ? String(e.retryAfter) : undefined;
-    return jsonErr(
-      e?.status || 429,
-      "RATE_LIMITED",
-      s(e?.message || "Rate limited", 200),
-      requestId,
-      null,
-      retryAfter ? { "retry-after": retryAfter } : undefined,
-    );
-  }
 
-  let body: any = null;
-  try {
-    const ct = (h.get("content-type") || "").toLowerCase();
-    if (!ct.includes("application/json")) {
-      return jsonErr(415, "BAD_REQUEST", "Expected application/json", requestId);
+    // JSON body (helper enforces application/json)
+    const body = await readJson<any>(req);
+    if (!body || typeof body !== "object") {
+      throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Invalid JSON (expected application/json)" });
     }
-    body = await req.json();
-  } catch {
-    return jsonErr(400, "BAD_REQUEST", "Invalid JSON", requestId);
-  }
 
-  // Honeypot (bots fill hidden website field)
-  if (s(body?.website, 200)) {
-    return jsonOk(requestId, { id: null });
-  }
+    // Honeypot
+    if (s(body?.website, 200)) {
+      const res = ok({ id: null }, { requestId });
+      return withNoStore(res);
+    }
 
-  const company = s(body?.company, 220);
-  const email = (() => {
+    const company = s(body?.company, 220);
+    const email = requireEmail(body?.email);
+    const phone = s(body?.phone, 60);
+
+    const quoteNumber = s(body?.quoteNumber, 80);
+    const po = s(body?.po, 80);
+
+    const instructions = s(body?.instructions, 5000);
+    const expectedDate = s(body?.expectedDate, 20);
+    const shippingOption = s(body?.shippingOption, 80);
+    const artworkNote = s(body?.artworkNote, 300);
+
+    if (!company) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Company is required" });
+    if (!phone) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Phone is required" });
+    if (!quoteNumber) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Quote number is required" });
+
+    const pool = getPool();
+    const client = await pool.connect();
+
+    const createdAtIso = new Date().toISOString();
+
     try {
-      return requireEmail(body?.email);
-    } catch {
-      return "";
-    }
-  })();
-  const phone = s(body?.phone, 60);
+      await client.query("BEGIN");
 
-  const quoteNumber = s(body?.quoteNumber, 80);
-  const po = s(body?.po, 80);
-
-  const instructions = s(body?.instructions, 5000);
-  const expectedDate = s(body?.expectedDate, 20);
-  const shippingOption = s(body?.shippingOption, 80);
-  const artworkNote = s(body?.artworkNote, 300);
-
-  if (!company) return jsonErr(400, "VALIDATION_ERROR", "Company is required", requestId);
-  if (!email) return jsonErr(400, "VALIDATION_ERROR", "Valid email is required", requestId);
-  if (!phone) return jsonErr(400, "VALIDATION_ERROR", "Phone is required", requestId);
-  if (!quoteNumber) return jsonErr(400, "VALIDATION_ERROR", "Quote number is required", requestId);
-
-  const pool = getPool();
-  const client = await pool.connect();
-
-  const createdAtIso = new Date().toISOString();
-
-  try {
-    await client.query("BEGIN");
-
-    // Duplicate guard: same email + same quoteNumber within last 5 minutes
-    const dup = await client.query(
-      `
-      SELECT id::text
-      FROM custom_order_requests
-      WHERE email = $1
-        AND quote_number = $2
-        AND created_at >= now() - interval '5 minutes'
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      [email, quoteNumber],
-    );
-
-    let requestRowId = String(dup.rows?.[0]?.id || "");
-    if (!requestRowId) {
-      const ins = await client.query(
+      // Duplicate guard: same email + same quoteNumber within last 5 minutes
+      const dup = await client.query(
         `
-        INSERT INTO custom_order_requests (
-          company, email, phone,
-          quote_number, po,
-          instructions,
-          expected_date,
-          shipping_option,
-          artwork_note,
-          status
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,
-          CASE WHEN $7='' THEN NULL ELSE $7::date END,
-          $8,$9,'new'
-        )
-        RETURNING id::text
+        SELECT id::text
+        FROM custom_order_requests
+        WHERE email = $1
+          AND quote_number = $2
+          AND created_at >= now() - interval '5 minutes'
+        ORDER BY created_at DESC
+        LIMIT 1
         `,
-        [
-          company,
-          email,
-          phone,
-          quoteNumber,
-          po || null,
-          instructions || null,
-          expectedDate || "",
-          shippingOption || null,
-          artworkNote || null,
-        ],
+        [email, quoteNumber],
       );
-      requestRowId = String(ins.rows?.[0]?.id || "");
-    }
 
-    const resend = getResendClient();
-    const from = getInvoicesFromEmail();
-    const replyToSupport = (getSupportEmail() || "").trim() || undefined;
+      let requestRowId = String(dup.rows?.[0]?.id || "");
+      if (!requestRowId) {
+        const ins = await client.query(
+          `
+          INSERT INTO custom_order_requests (
+            company, email, phone,
+            quote_number, po,
+            instructions,
+            expected_date,
+            shipping_option,
+            artwork_note,
+            status
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,
+            CASE WHEN $7='' THEN NULL ELSE $7::date END,
+            $8,$9,'new'
+          )
+          RETURNING id::text
+          `,
+          [
+            company,
+            email,
+            phone,
+            quoteNumber,
+            po || null,
+            instructions || null,
+            expectedDate || "",
+            shippingOption || null,
+            artworkNote || null,
+          ],
+        );
+        requestRowId = String(ins.rows?.[0]?.id || "");
+      }
 
-    // Stage 2: canonical internal destination env first
-    const internalTo =
-      (process.env.SUPPORT_TO_EMAIL || "").trim() ||
-      (getSupportEmail() || "").trim() ||
-      email;
+      const resend = getResendClient();
+      const from = getInvoicesFromEmail();
+      const replyToSupport = (getSupportEmail() || "").trim() || undefined;
 
-    const subjCustomer = `Custom order received — Quote ${quoteNumber}`;
-    const subjInternal = `New custom order — Quote ${quoteNumber} — ${company}`;
+      const internalTo =
+        (process.env.SUPPORT_TO_EMAIL || "").trim() ||
+        (getSupportEmail() || "").trim() ||
+        email;
 
-    // Customer email (non-fatal)
-    try {
-      const { data, error } = await resend.emails.send({
-        from,
-        to: email,
-        subject: subjCustomer,
-        reply_to: replyToSupport,
-        html: customerHtml({
-          company,
-          requestId: requestRowId,
-          quoteNumber,
-          expectedDate: expectedDate || undefined,
-          shippingOption: shippingOption || undefined,
-          instructions: instructions || undefined,
-        }),
-      });
-      if (error) throw error;
+      const subjCustomer = `Custom order received — Quote ${quoteNumber}`;
+      const subjInternal = `New custom order — Quote ${quoteNumber} — ${company}`;
 
-      await logEmailOutbox({
-        client,
-        messageType: "custom_order_customer",
-        toEmail: email,
-        fromEmail: from,
-        subject: subjCustomer,
-        status: "sent",
-        resendId: data?.id || null,
-        relatedTable: "custom_order_requests",
-        relatedId: requestRowId,
-      });
+      // Customer email (non-fatal)
+      try {
+        const { data, error } = await resend.emails.send({
+          from,
+          to: email,
+          subject: subjCustomer,
+          reply_to: replyToSupport,
+          html: customerHtml({
+            company,
+            requestId: requestRowId,
+            quoteNumber,
+            expectedDate: expectedDate || undefined,
+            shippingOption: shippingOption || undefined,
+            instructions: instructions || undefined,
+          }),
+        });
+        if (error) throw error;
+
+        await logEmailOutbox({
+          client,
+          messageType: "custom_order_customer",
+          toEmail: email,
+          fromEmail: from,
+          subject: subjCustomer,
+          status: "sent",
+          resendId: data?.id || null,
+          relatedTable: "custom_order_requests",
+          relatedId: requestRowId,
+        });
+      } catch (e: any) {
+        const msg = s(e?.message || e, 2000);
+        log.warn("custom order customer email failed", { message: msg, requestId });
+        await logEmailOutbox({
+          client,
+          messageType: "custom_order_customer",
+          toEmail: email,
+          fromEmail: from,
+          subject: subjCustomer,
+          status: "failed",
+          error: msg,
+          relatedTable: "custom_order_requests",
+          relatedId: requestRowId,
+        });
+      }
+
+      // Internal email (non-fatal)
+      try {
+        const { data, error } = await resend.emails.send({
+          from,
+          to: internalTo,
+          subject: subjInternal,
+          reply_to: email, // replying goes to customer
+          html: internalHtml({
+            requestId: requestRowId,
+            quoteNumber,
+            company,
+            email,
+            phone,
+            po,
+            expectedDate,
+            shippingOption,
+            instructions,
+            artworkNote,
+            ip,
+            userAgent: ua,
+            createdAt: createdAtIso,
+          }),
+        });
+        if (error) throw error;
+
+        await logEmailOutbox({
+          client,
+          messageType: "custom_order_internal",
+          toEmail: internalTo,
+          fromEmail: from,
+          subject: subjInternal,
+          status: "sent",
+          resendId: data?.id || null,
+          relatedTable: "custom_order_requests",
+          relatedId: requestRowId,
+        });
+      } catch (e: any) {
+        const msg = s(e?.message || e, 2000);
+        log.warn("custom order internal email failed", { message: msg, requestId });
+        await logEmailOutbox({
+          client,
+          messageType: "custom_order_internal",
+          toEmail: internalTo,
+          fromEmail: from,
+          subject: subjInternal,
+          status: "failed",
+          error: msg,
+          relatedTable: "custom_order_requests",
+          relatedId: requestRowId,
+        });
+      }
+
+      await client.query("COMMIT");
+
+      const res = ok({ id: requestRowId }, { requestId });
+      return withNoStore(res);
     } catch (e: any) {
-      const msg = s(e?.message || e, 2000);
-      log.warn("custom order customer email failed", { message: msg, requestId });
-      await logEmailOutbox({
-        client,
-        messageType: "custom_order_customer",
-        toEmail: email,
-        fromEmail: from,
-        subject: subjCustomer,
-        status: "failed",
-        error: msg,
-        relatedTable: "custom_order_requests",
-        relatedId: requestRowId,
-      });
-    }
-
-    // Internal email (non-fatal)
-    try {
-      const { data, error } = await resend.emails.send({
-        from,
-        to: internalTo,
-        subject: subjInternal,
-        reply_to: email, // replying goes to customer
-        html: internalHtml({
-          requestId: requestRowId,
-          quoteNumber,
-          company,
-          email,
-          phone,
-          po,
-          expectedDate,
-          shippingOption,
-          instructions,
-          artworkNote,
-          ip,
-          userAgent: ua,
-          createdAt: createdAtIso,
-        }),
-      });
-      if (error) throw error;
-
-      await logEmailOutbox({
-        client,
-        messageType: "custom_order_internal",
-        toEmail: internalTo,
-        fromEmail: from,
-        subject: subjInternal,
-        status: "sent",
-        resendId: data?.id || null,
-        relatedTable: "custom_order_requests",
-        relatedId: requestRowId,
-      });
-    } catch (e: any) {
-      const msg = s(e?.message || e, 2000);
-      log.warn("custom order internal email failed", { message: msg, requestId });
-      await logEmailOutbox({
-        client,
-        messageType: "custom_order_internal",
-        toEmail: internalTo,
-        fromEmail: from,
-        subject: subjInternal,
-        status: "failed",
-        error: msg,
-        relatedTable: "custom_order_requests",
-        relatedId: requestRowId,
-      });
-    }
-
-    await client.query("COMMIT");
-    return jsonOk(requestId, { id: requestRowId });
-  } catch (e: any) {
-    try {
       await client.query("ROLLBACK");
-    } catch {}
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e: unknown) {
+    // Only log authz denials as authz
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      logAuthzDenial({
+        req,
+        policy: POLICY,
+        requestId,
+        reason: e.message,
+      });
+    }
 
-    const msg = s(e?.message || e, 1200);
-    log.error("custom order route failed", { message: msg, requestId });
+    // Retry-After for rate limit
+    let retryAfter: string | undefined;
+    if (e instanceof ApiError && e.code === "RATE_LIMITED") {
+      const ra = (e.details as any)?.retryAfter;
+      if (typeof ra === "number" && Number.isFinite(ra)) retryAfter = String(Math.max(1, Math.floor(ra)));
+    }
 
-    return jsonErr(500, "INTERNAL_ERROR", msg || "Failed to submit custom order", requestId);
-  } finally {
-    client.release();
+    const msg = e instanceof Error ? e.message : "custom order route failed";
+    log.error("custom order route failed", { message: msg, requestId, ip });
+
+    const res = fail(e, { requestId });
+    if (retryAfter) res.headers.set("retry-after", retryAfter);
+    return withNoStore(res);
   }
 }

@@ -1,54 +1,80 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+
 import { getAddressById, updateAddress, deleteAddress } from "@/lib/addresses";
 import { requireValidAddress } from "@/lib/addressValidation";
+import { ApiError, ok, fail, getRequestIdFromHeaders, readJson } from "@/lib/apiError";
+import { withRequestId } from "@/lib/logger";
+import { enforcePolicy, logAuthzDenial } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-function jsonError(status: number, message: string) {
-  return NextResponse.json({ error: message }, { status });
+function noStoreHeaders() {
+  return {
+    "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    pragma: "no-cache",
+    expires: "0",
+  } as const;
 }
 
-async function readJson(req: Request): Promise<any> {
-  try {
-    return await req.json();
-  } catch {
-    return null;
-  }
+function withNoStore(res: Response) {
+  const hs = noStoreHeaders();
+  for (const [k, v] of Object.entries(hs)) (res as any).headers?.set?.(k, v);
+  return res;
 }
 
-export async function GET(
-  _req: Request,
-  ctx: { params: Promise<{ id: string }> }
-) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const requestId = getRequestIdFromHeaders(req.headers);
+  const log = withRequestId(requestId);
+
+  const POLICY = "auth" as const;
+
   try {
+    const auth = await enforcePolicy(req, POLICY);
+
     const { id } = await ctx.params;
 
-    const row = await getAddressById(id);
-    if (!row) return jsonError(404, "Address not found");
+    // NOTE: lib layer should enforce customer scoping
+    const row = await getAddressById(id, auth.userId);
+    if (!row) throw new ApiError({ status: 404, code: "NOT_FOUND", message: "Address not found" });
 
-    return NextResponse.json({ address: row });
-  } catch (err) {
-    if (err instanceof Response) return err;
-    return jsonError(500, "Failed to get address");
-  }
-}
-
-export async function PATCH(
-  req: Request,
-  ctx: { params: Promise<{ id: string }> }
-) {
-  try {
-    const { id } = await ctx.params;
-    const body = await readJson(req);
-    if (!body || typeof body !== "object") {
-      return jsonError(400, "Invalid JSON body");
+    const res = ok({ address: row }, { requestId: auth.requestId });
+    return withNoStore(res);
+  } catch (e: unknown) {
+    // Only log authz denials as authz
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      logAuthzDenial({ req, policy: POLICY, requestId, reason: e.message });
     }
 
-    const existing = await getAddressById(id);
-    if (!existing) return jsonError(404, "Address not found");
+    const msg = e instanceof Error ? e.message : "Failed to get address";
+    log.error("Get address failed", { message: msg, requestId });
+
+    const res = fail(e, { requestId });
+    return withNoStore(res);
+  }
+}
+
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const requestId = getRequestIdFromHeaders(req.headers);
+  const log = withRequestId(requestId);
+
+  const POLICY = "auth" as const;
+
+  try {
+    const auth = await enforcePolicy(req, POLICY);
+
+    const { id } = await ctx.params;
+
+    const body = await readJson<any>(req);
+    if (!body || typeof body !== "object") {
+      throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Invalid JSON (expected application/json)" });
+    }
+
+    const existing = await getAddressById(id, auth.userId);
+    if (!existing) throw new ApiError({ status: 404, code: "NOT_FOUND", message: "Address not found" });
 
     // If any core address fields are being updated, validate merged result.
     const touchesCore =
@@ -75,11 +101,12 @@ export async function PATCH(
         country: ("country" in body ? body.country : existing.country) ?? null,
       };
 
-      // Validate merged. (kind only affects optional stricter rules)
       requireValidAddress(merged, { kind: body.kind === "billing" ? "billing" : "shipping" });
     }
 
     const updated = await updateAddress(id, {
+      customerId: auth.userId,
+
       ...(typeof body.label !== "undefined" ? { label: body.label } : {}),
       ...(typeof body.firstName !== "undefined" ? { firstName: body.firstName } : {}),
       ...(typeof body.lastName !== "undefined" ? { lastName: body.lastName } : {}),
@@ -105,30 +132,53 @@ export async function PATCH(
       ...(typeof body.metadata !== "undefined" ? { metadata: body.metadata } : {}),
     });
 
-    if (!updated) return jsonError(404, "Address not found");
+    if (!updated) throw new ApiError({ status: 404, code: "NOT_FOUND", message: "Address not found" });
 
-    return NextResponse.json({ address: updated });
-  } catch (err) {
-    if (err instanceof Response) return err;
+    const res = ok({ address: updated }, { requestId: auth.requestId });
+    return withNoStore(res);
+  } catch (e: unknown) {
+    // Preserve old behavior: "field: message" -> 422 (but keep Stage 2 envelope)
+    const msg = e instanceof Error ? e.message : "";
+    if (msg && msg.includes(":")) {
+      const res = fail(new ApiError({ status: 422, code: "BAD_REQUEST", message: msg }), { requestId });
+      return withNoStore(res);
+    }
 
-    const msg = err instanceof Error ? err.message : "";
-    if (msg.includes(":")) return jsonError(422, msg);
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      logAuthzDenial({ req, policy: POLICY, requestId, reason: e.message });
+    }
 
-    return jsonError(500, "Failed to update address");
+    log.error("Update address failed", { message: msg || "Failed to update address", requestId });
+
+    const res = fail(e, { requestId });
+    return withNoStore(res);
   }
 }
 
-export async function DELETE(
-  _req: Request,
-  ctx: { params: Promise<{ id: string }> }
-) {
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const requestId = getRequestIdFromHeaders(req.headers);
+  const log = withRequestId(requestId);
+
+  const POLICY = "auth" as const;
+
   try {
+    const auth = await enforcePolicy(req, POLICY);
+
     const { id } = await ctx.params;
 
-    await deleteAddress(id);
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    if (err instanceof Response) return err;
-    return jsonError(500, "Failed to delete address");
+    await deleteAddress(id, auth.userId);
+
+    const res = ok({ ok: true }, { requestId: auth.requestId });
+    return withNoStore(res);
+  } catch (e: unknown) {
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      logAuthzDenial({ req, policy: POLICY, requestId, reason: e.message });
+    }
+
+    const msg = e instanceof Error ? e.message : "Failed to delete address";
+    log.error("Delete address failed", { message: msg, requestId });
+
+    const res = fail(e, { requestId });
+    return withNoStore(res);
   }
 }

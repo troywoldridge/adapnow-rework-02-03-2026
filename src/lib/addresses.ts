@@ -3,17 +3,19 @@ import "server-only";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { ensureCustomer } from "@/lib/customer";
 import {
   customerAddresses,
   type CustomerAddressRow,
   type CustomerAddressInsert,
 } from "@/lib/db/schema/customerAddresses";
 import { encryptPhoneToString, normalizePhone } from "@/lib/cryptoPhone";
+import { ApiError } from "@/lib/apiError";
 
 type AddressRow = CustomerAddressRow;
 
-type AddressCreateInput = Omit<
+export type DefaultKind = "shipping" | "billing";
+
+export type AddressCreateInput = Omit<
   CustomerAddressInsert,
   | "id"
   | "customerId"
@@ -23,6 +25,9 @@ type AddressCreateInput = Omit<
   | "updatedAt"
   | "deletedAt"
 > & {
+  // Required: explicit customer scope (Stage 2)
+  customerId: string;
+
   // Optional plaintext phone input (will be encrypted)
   phone?: string | null;
 
@@ -31,7 +36,7 @@ type AddressCreateInput = Omit<
   isDefaultBilling?: boolean;
 };
 
-type AddressPatch = Partial<
+export type AddressPatch = Partial<
   Omit<
     AddressCreateInput,
     | "customerId"
@@ -45,10 +50,14 @@ type AddressPatch = Partial<
   phone?: string | null;
 };
 
-type DefaultKind = "shipping" | "billing";
-
 function s(v: unknown): string {
   return String(v ?? "").trim();
+}
+
+function requireCustomerId(customerId: unknown): string {
+  const id = s(customerId);
+  if (!id) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "customerId is required" });
+  return id;
 }
 
 function toUpperIso2(v: unknown): string | null {
@@ -105,17 +114,17 @@ function defaultCols(kind: DefaultKind): {
 }
 
 /**
- * List addresses for the current authenticated customer.
+ * List addresses for a customer.
  * - Excludes soft-deleted rows
  * - Orders defaults first, then most recently updated/created
  */
-export async function listAddresses(): Promise<AddressRow[]> {
-  const cust = await ensureCustomer();
+export async function listAddresses(customerId: string): Promise<AddressRow[]> {
+  const custId = requireCustomerId(customerId);
 
   return db
     .select()
     .from(customerAddresses)
-    .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`))
+    .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`))
     .orderBy(
       desc(customerAddresses.isDefaultShipping),
       desc(customerAddresses.isDefaultBilling),
@@ -125,46 +134,56 @@ export async function listAddresses(): Promise<AddressRow[]> {
 }
 
 /**
- * Get the default shipping/billing address for current customer.
+ * Get the default shipping/billing address for a customer.
  */
-export async function getDefaultAddress(kind: DefaultKind): Promise<AddressRow | null> {
-  const cust = await ensureCustomer();
+export async function getDefaultAddress(kind: DefaultKind, customerId: string): Promise<AddressRow | null> {
+  const custId = requireCustomerId(customerId);
   const { col } = defaultCols(kind);
 
   const rows = await db
     .select()
     .from(customerAddresses)
-    .where(
-      and(
-        eq(customerAddresses.customerId, cust.id),
-        eq(col, true),
-        sql`deleted_at is null`,
-      ),
-    )
+    .where(and(eq(customerAddresses.customerId, custId), eq(col, true), sql`deleted_at is null`))
     .limit(1);
 
   return rows[0] ?? null;
 }
 
 /**
- * Create an address for the current customer.
+ * Get a single address by id for a customer (excluding soft-deleted).
+ */
+export async function getAddressById(id: string, customerId: string): Promise<AddressRow | null> {
+  const custId = requireCustomerId(customerId);
+  const addrId = s(id);
+  if (!addrId) return null;
+
+  const rows = await db
+    .select()
+    .from(customerAddresses)
+    .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId), sql`deleted_at is null`))
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
+/**
+ * Create an address for a customer.
  * If default flags are true, atomically unset existing defaults first.
  */
 export async function createAddress(input: AddressCreateInput): Promise<AddressRow> {
-  const cust = await ensureCustomer();
+  const custId = requireCustomerId(input.customerId);
 
   const isDefaultShipping = input.isDefaultShipping === true;
   const isDefaultBilling = input.isDefaultBilling === true;
 
   const country = toUpperIso2(input.country) ?? "";
-  if (!country) throw new Error("country is required");
+  if (!country) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "country is required" });
 
   const sortOrder = safeSortOrder((input as any).sortOrder);
-
   const phoneBits = await maybeEncryptPhone(input.phone ?? null);
 
   const insert: CustomerAddressInsert = {
-    customerId: cust.id,
+    customerId: custId,
 
     label: input.label ?? null,
 
@@ -191,18 +210,17 @@ export async function createAddress(input: AddressCreateInput): Promise<AddressR
   };
 
   return db.transaction(async (tx) => {
-    // Maintain partial unique constraints by unsetting current defaults first.
     if (isDefaultShipping) {
       await tx
         .update(customerAddresses)
         .set({ isDefaultShipping: false })
-        .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`));
+        .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
     }
     if (isDefaultBilling) {
       await tx
         .update(customerAddresses)
         .set({ isDefaultBilling: false })
-        .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`));
+        .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
     }
 
     const [row] = await tx.insert(customerAddresses).values(insert).returning();
@@ -211,27 +229,26 @@ export async function createAddress(input: AddressCreateInput): Promise<AddressR
 }
 
 /**
- * Update an address for the current customer (no cross-customer access).
+ * Update an address for a customer (no cross-customer access).
  * Supports setting shipping/billing defaults and phone encryption.
  * Returns null if not found (or soft-deleted).
  */
 export async function updateAddress(
   id: string,
-  patch: AddressPatch,
+  patch: AddressPatch & { customerId: string },
 ): Promise<AddressRow | null> {
-  const cust = await ensureCustomer();
+  const custId = requireCustomerId(patch.customerId);
 
   const addrId = s(id);
-  if (!addrId) throw new Error("id is required");
+  if (!addrId) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "id is required" });
 
-  const keys = Object.keys(patch ?? {});
-  if (keys.length === 0) return await getAddressById(addrId);
+  const keys = Object.keys(patch ?? {}).filter((k) => k !== "customerId");
+  if (keys.length === 0) return await getAddressById(addrId, custId);
 
   const setDefaultShipping = patch.isDefaultShipping === true;
   const setDefaultBilling = patch.isDefaultBilling === true;
 
-  const phoneBits =
-    typeof patch.phone !== "undefined" ? await maybeEncryptPhone(patch.phone) : {};
+  const phoneBits = typeof patch.phone !== "undefined" ? await maybeEncryptPhone(patch.phone) : {};
 
   const update: Partial<CustomerAddressInsert> = {
     ...(typeof patch.label !== "undefined" ? { label: patch.label ?? null } : {}),
@@ -268,30 +285,23 @@ export async function updateAddress(
   };
 
   return db.transaction(async (tx) => {
-    // If setting as default, unset existing defaults first (atomic).
     if (setDefaultShipping) {
       await tx
         .update(customerAddresses)
         .set({ isDefaultShipping: false })
-        .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`));
+        .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
     }
     if (setDefaultBilling) {
       await tx
         .update(customerAddresses)
         .set({ isDefaultBilling: false })
-        .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`));
+        .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
     }
 
     const [row] = await tx
       .update(customerAddresses)
       .set(update)
-      .where(
-        and(
-          eq(customerAddresses.id, addrId),
-          eq(customerAddresses.customerId, cust.id),
-          sql`deleted_at is null`,
-        ),
-      )
+      .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId), sql`deleted_at is null`))
       .returning();
 
     return row ?? null;
@@ -299,11 +309,11 @@ export async function updateAddress(
 }
 
 /**
- * Soft-delete an address for the current customer.
+ * Soft-delete an address for a customer.
  * If it was default shipping/billing, promote a replacement (most recently updated).
  */
-export async function deleteAddress(id: string): Promise<void> {
-  const cust = await ensureCustomer();
+export async function deleteAddress(id: string, customerId: string): Promise<void> {
+  const custId = requireCustomerId(customerId);
   const addrId = s(id);
   if (!addrId) return;
 
@@ -311,13 +321,7 @@ export async function deleteAddress(id: string): Promise<void> {
     const rows = await tx
       .select()
       .from(customerAddresses)
-      .where(
-        and(
-          eq(customerAddresses.id, addrId),
-          eq(customerAddresses.customerId, cust.id),
-          sql`deleted_at is null`,
-        ),
-      )
+      .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId), sql`deleted_at is null`))
       .limit(1);
 
     const existing = rows[0];
@@ -326,7 +330,6 @@ export async function deleteAddress(id: string): Promise<void> {
     const wasDefaultShipping = existing.isDefaultShipping === true;
     const wasDefaultBilling = existing.isDefaultBilling === true;
 
-    // Soft delete it and unset defaults (so partial unique doesn't block promotions)
     await tx
       .update(customerAddresses)
       .set({
@@ -335,14 +338,13 @@ export async function deleteAddress(id: string): Promise<void> {
         isDefaultBilling: false,
         updatedAt: sql`now()`,
       })
-      .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, cust.id)));
+      .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId)));
 
-    // Promote a new default if needed
     if (wasDefaultShipping) {
       const next = await tx
         .select()
         .from(customerAddresses)
-        .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`))
+        .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`))
         .orderBy(desc(customerAddresses.updatedAt), desc(customerAddresses.createdAt))
         .limit(1);
 
@@ -350,7 +352,7 @@ export async function deleteAddress(id: string): Promise<void> {
         await tx
           .update(customerAddresses)
           .set({ isDefaultShipping: true, updatedAt: sql`now()` })
-          .where(and(eq(customerAddresses.id, next[0].id), eq(customerAddresses.customerId, cust.id)));
+          .where(and(eq(customerAddresses.id, next[0].id), eq(customerAddresses.customerId, custId)));
       }
     }
 
@@ -358,7 +360,7 @@ export async function deleteAddress(id: string): Promise<void> {
       const next = await tx
         .select()
         .from(customerAddresses)
-        .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`))
+        .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`))
         .orderBy(desc(customerAddresses.updatedAt), desc(customerAddresses.createdAt))
         .limit(1);
 
@@ -366,66 +368,47 @@ export async function deleteAddress(id: string): Promise<void> {
         await tx
           .update(customerAddresses)
           .set({ isDefaultBilling: true, updatedAt: sql`now()` })
-          .where(and(eq(customerAddresses.id, next[0].id), eq(customerAddresses.customerId, cust.id)));
+          .where(and(eq(customerAddresses.id, next[0].id), eq(customerAddresses.customerId, custId)));
       }
     }
   });
 }
 
 /**
- * Atomically set an address as default shipping/billing for the current customer.
+ * Atomically set an address as default shipping/billing for a customer.
+ * Stage 2 hardening: throws NOT_FOUND if id doesn't exist for that customer.
  */
-export async function setDefaultAddress(kind: DefaultKind, id: string): Promise<void> {
-  const cust = await ensureCustomer();
+export async function setDefaultAddress(kind: DefaultKind, id: string, customerId: string): Promise<void> {
+  const custId = requireCustomerId(customerId);
   const addrId = s(id);
-  if (!addrId) return;
+  if (!addrId) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "id is required" });
 
   const { col, setTrue, setFalse } = defaultCols(kind);
 
   await db.transaction(async (tx) => {
+    // Ensure the address exists for this customer and is not deleted
+    const exists = await tx
+      .select({ id: customerAddresses.id })
+      .from(customerAddresses)
+      .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId), sql`deleted_at is null`))
+      .limit(1);
+
+    if (!exists[0]) {
+      throw new ApiError({ status: 404, code: "NOT_FOUND", message: "Address not found" });
+    }
+
     // Unset current default for this kind
     await tx
       .update(customerAddresses)
       .set({ ...setFalse, updatedAt: sql`now()` })
-      .where(and(eq(customerAddresses.customerId, cust.id), sql`deleted_at is null`));
+      .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
 
-    // Set chosen id as default (only if it belongs to this customer and isn't deleted)
+    // Set chosen id as default
     await tx
       .update(customerAddresses)
       .set({ ...setTrue, updatedAt: sql`now()` })
-      .where(
-        and(
-          eq(customerAddresses.id, addrId),
-          eq(customerAddresses.customerId, cust.id),
-          sql`deleted_at is null`,
-        ),
-      );
+      .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
 
-    // NOTE: if addrId doesn't exist for this customer, nothing becomes default.
-    // Caller can verify via getDefaultAddress() if desired.
-    void col; // keep TS happy for unused col in some builds
+    void col; // keep TS happy in some builds
   });
-}
-
-/**
- * Get a single address by id for the current customer (excluding soft-deleted).
- */
-export async function getAddressById(id: string): Promise<AddressRow | null> {
-  const cust = await ensureCustomer();
-  const addrId = s(id);
-  if (!addrId) return null;
-
-  const rows = await db
-    .select()
-    .from(customerAddresses)
-    .where(
-      and(
-        eq(customerAddresses.id, addrId),
-        eq(customerAddresses.customerId, cust.id),
-        sql`deleted_at is null`,
-      ),
-    )
-    .limit(1);
-
-  return rows[0] ?? null;
 }

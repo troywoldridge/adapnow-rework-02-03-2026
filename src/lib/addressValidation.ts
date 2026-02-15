@@ -1,6 +1,8 @@
 // src/lib/addressValidation.ts
 import "server-only";
 
+import { ApiError } from "@/lib/apiError";
+
 /**
  * Address validation + normalization helpers.
  * Designed to be used by API routes + server actions.
@@ -9,6 +11,10 @@ import "server-only";
  * - Keep rules strict enough to avoid broken shipping labels
  * - Avoid over-validating (international formats vary widely)
  * - Normalize consistently (trim, collapse whitespace, uppercase ISO2 country)
+ *
+ * US/CA:
+ * - Adds light, practical checks for state/province + postal formats
+ * - Normalizes ZIP+4 and Canadian postal spacing
  */
 
 export type AddressKind = "shipping" | "billing";
@@ -92,17 +98,41 @@ function normalizeCountryIso2(v: unknown): string | null {
   return c;
 }
 
-function normalizePostal(v: unknown): string {
-  // Keep it simple: trim + collapse spaces + uppercase letters.
-  // (We avoid country-specific formatting here; carriers accept many formats.)
-  const p = collapseWhitespace(s(v)).toUpperCase();
-  return p;
+function normalizeState(v: unknown, countryIso2: string | null): string {
+  const raw = collapseWhitespace(s(v));
+  if (!raw) return "";
+
+  // US/CA: uppercase abbreviations
+  if (countryIso2 === "US" || countryIso2 === "CA") return raw.toUpperCase();
+
+  // Else: keep as-is (just collapsed)
+  return raw;
 }
 
-function normalizeState(v: unknown): string {
-  // Don't assume ISO subdivision codes; just collapse whitespace.
-  // US/CA typically uppercase abbreviations, but other countries vary.
-  return collapseWhitespace(s(v));
+function normalizePostal(v: unknown, countryIso2: string | null): string {
+  const raw = collapseWhitespace(s(v));
+  if (!raw) return "";
+
+  const upper = raw.toUpperCase();
+
+  // US ZIP: allow 12345, 123456789, 12345-6789
+  if (countryIso2 === "US") {
+    const digits = upper.replace(/[^\d]/g, "");
+    if (digits.length === 5) return digits;
+    if (digits.length === 9) return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+    // If it doesn't match, return upper as-is and let validation fail below.
+    return upper;
+  }
+
+  // CA postal: normalize to "A1A 1A1" when possible
+  if (countryIso2 === "CA") {
+    const compact = upper.replace(/\s+/g, "");
+    if (compact.length === 6) return `${compact.slice(0, 3)} ${compact.slice(3)}`;
+    return upper;
+  }
+
+  // International: trim + collapse spaces + uppercase letters
+  return upper;
 }
 
 function normalizePhoneLoose(v: unknown): string | null {
@@ -120,6 +150,27 @@ function normalizePhoneLoose(v: unknown): string | null {
   return out;
 }
 
+function isUsStateCode(v: string): boolean {
+  return /^[A-Z]{2}$/.test(v);
+}
+
+function isCaProvinceCode(v: string): boolean {
+  // Keep it simple: 2-letter code (ON, QC, BC, AB, etc.)
+  return /^[A-Z]{2}$/.test(v);
+}
+
+function isUsZip(v: string): boolean {
+  // Accept 12345 or 12345-6789
+  return /^\d{5}(-\d{4})?$/.test(v);
+}
+
+function isCaPostal(v: string): boolean {
+  // Accept A1A 1A1 (space optional)
+  // Excludes D,F,I,O,Q,U in standard formats, but we keep it light and practical.
+  const compact = v.replace(/\s+/g, "");
+  return /^[A-Z]\d[A-Z]\d[A-Z]\d$/.test(compact);
+}
+
 /**
  * Validate + normalize an address input.
  *
@@ -132,10 +183,14 @@ function normalizePhoneLoose(v: unknown): string | null {
  *   - shipping labels can rely on customer profile
  * - If email is provided, it must look like an email.
  * - If phone is provided, it is normalized loosely; if too short it's discarded.
+ *
+ * US/CA rules:
+ * - US: state must be 2 letters; postal must be ZIP5 or ZIP+4
+ * - CA: province must be 2 letters; postal must be A1A 1A1 (space optional)
  */
 export function validateAddress(
   input: AddressInput,
-  opts?: { kind?: AddressKind }
+  opts?: { kind?: AddressKind },
 ): AddressValidationResult {
   const kind = opts?.kind ?? "shipping";
 
@@ -150,16 +205,15 @@ export function validateAddress(
   const street1 = collapseWhitespace(s(input.street1));
   const street2 = collapseWhitespace(s(input.street2));
   const city = collapseWhitespace(s(input.city));
-  const state = normalizeState(input.state);
-  const postalCode = normalizePostal(input.postalCode);
   const country = normalizeCountryIso2(input.country);
+
+  const state = normalizeState(input.state, country);
+  const postalCode = normalizePostal(input.postalCode, country);
 
   if (!street1) return { ok: false, field: "street1", error: "Street address is required." };
   if (!city) return { ok: false, field: "city", error: "City is required." };
   if (!state) return { ok: false, field: "state", error: "State/Province/Region is required." };
-  if (!postalCode) {
-    return { ok: false, field: "postalCode", error: "Postal code is required." };
-  }
+  if (!postalCode) return { ok: false, field: "postalCode", error: "Postal code is required." };
   if (!country) {
     return {
       ok: false,
@@ -172,11 +226,32 @@ export function validateAddress(
     return { ok: false, field: "email", error: "Email address looks invalid." };
   }
 
+  // US/CA: lightweight practical checks
+  if (country === "US") {
+    if (!isUsStateCode(state)) {
+      return { ok: false, field: "state", error: "US state must be a 2-letter code (e.g., NY)." };
+    }
+    if (!isUsZip(postalCode)) {
+      return { ok: false, field: "postalCode", error: "US ZIP must be 5 digits or ZIP+4 (e.g., 12345 or 12345-6789)." };
+    }
+  }
+
+  if (country === "CA") {
+    if (!isCaProvinceCode(state)) {
+      return { ok: false, field: "state", error: "Canadian province must be a 2-letter code (e.g., ON)." };
+    }
+    if (!isCaPostal(postalCode)) {
+      return { ok: false, field: "postalCode", error: "Canadian postal code must look like A1A 1A1." };
+    }
+  }
+
   // Optional stricter rules depending on kind (future-proof switch)
   if (kind === "shipping") {
-    // Shipping often needs a recipient name OR company; we won't hard-require,
-    // but we can at least normalize empties.
+    // Shipping often needs a recipient name OR company; we won't hard-require.
     // (If you want to require one, we can flip it later.)
+    void firstName;
+    void lastName;
+    void company;
   }
 
   const normalized: NormalizedAddress = {
@@ -202,11 +277,19 @@ export function validateAddress(
 
 /**
  * Convenience: throws on invalid input (useful for server actions).
+ * Stage 2: throw ApiError (422) so routes can use fail() uniformly.
  */
 export function requireValidAddress(input: AddressInput, opts?: { kind?: AddressKind }): NormalizedAddress {
   const res = validateAddress(input, opts);
   if (!res.ok) {
-    throw new Error(`${res.field}: ${res.error}`);
+    // Keep the "field: message" shape for backwards compatibility with older handlers,
+    // but make it a proper API error for Stage 2 plumbing.
+    throw new ApiError({
+      status: 422,
+      code: "BAD_REQUEST",
+      message: `${res.field}: ${res.error}`,
+      details: { field: res.field, error: res.error },
+    });
   }
   return res.value;
 }

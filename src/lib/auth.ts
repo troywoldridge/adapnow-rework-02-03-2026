@@ -1,79 +1,168 @@
-// src/lib/auth.ts
 import "server-only";
 
-import { auth } from "@clerk/nextjs/server";
-import type { NextRequest } from "next/server";
-import { enforcePolicy } from "@/lib/authzPolicy";
+import { auth, currentUser } from "@clerk/nextjs/server";
+import { ApiError, getRequestIdFromHeaders } from "@/lib/apiError";
 
-/** Minimal, stable typing for Clerk's getToken */
-type GetToken = (opts?: { template?: string }) => Promise<string | null>;
+export type AuthzPolicy = "public" | "auth" | "admin" | "cron";
 
 export type AuthContext = {
-  userId: string;
-  sessionId: string | null;
-  getToken: GetToken;
+  policy: AuthzPolicy;
+  requestId?: string;
+
+  userId?: string | null;
+  email?: string | null;
+
+  isAuthed: boolean;
+  isAdmin: boolean;
+  isCron: boolean;
 };
 
-/**
- * Canonical helper: get auth context (or null).
- * Prefer policy-based enforcement for routes; this is for low-level libs.
- */
-export async function getAuthContext(): Promise<AuthContext | null> {
-  const a = await auth();
-  if (!a?.userId) return null;
+function parseAdminEmails(): Set<string> {
+  const raw = (process.env.ADMIN_EMAILS || "").trim();
+  if (!raw) return new Set();
 
-  return {
-    userId: a.userId,
-    sessionId: a.sessionId ?? null,
-    getToken: a.getToken as GetToken,
+  // Supports:
+  // - comma separated: "a@x.com,b@y.com"
+  // - whitespace separated
+  // - newline separated
+  const parts = raw
+    .split(/[\s,]+/g)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  return new Set(parts);
+}
+
+const ADMIN_EMAILS = parseAdminEmails();
+
+function readCronSecretFromEnv(): string {
+  const v = (process.env.CRON_SECRET || "").trim();
+  return v;
+}
+
+function isCronAuthorized(req: Request): boolean {
+  const cronSecret = readCronSecretFromEnv();
+  if (!cronSecret) return false;
+
+  const h = req.headers;
+
+  // accept either:
+  // - x-cron-secret: <secret>
+  // - authorization: Bearer <secret>
+  const direct = (h.get("x-cron-secret") || "").trim();
+  if (direct && direct === cronSecret) return true;
+
+  const authz = (h.get("authorization") || "").trim();
+  const m = /^bearer\s+(.+)$/i.exec(authz);
+  if (m && m[1] && m[1].trim() === cronSecret) return true;
+
+  return false;
+}
+
+async function resolveEmail(): Promise<string | null> {
+  try {
+    const u = await currentUser();
+    const e = u?.emailAddresses?.[0]?.emailAddress ?? null;
+    return e ? e.toLowerCase() : null;
+  } catch {
+    // If Clerk isn't available / auth() only
+    return null;
+  }
+}
+
+export async function getAuthContext(req: Request, policy: AuthzPolicy): Promise<AuthContext> {
+  const requestId = getRequestIdFromHeaders(req.headers);
+
+  const cronOk = isCronAuthorized(req);
+  const { userId } = auth();
+
+  const email = userId ? await resolveEmail() : null;
+  const authed = Boolean(userId);
+  const admin = Boolean(email && ADMIN_EMAILS.size > 0 && ADMIN_EMAILS.has(email));
+
+  const ctx: AuthContext = {
+    policy,
+    requestId,
+    userId: userId ?? null,
+    email,
+    isAuthed: authed,
+    isAdmin: admin,
+    isCron: cronOk,
   };
-}
 
-/**
- * Canonical policy enforcement for API routes.
- * Returns { ok: true, ctx } or { ok: false, res }.
- */
-export async function enforce(req: NextRequest, policy: "public" | "auth" | "admin" | "cron") {
-  const result = await enforcePolicy(req, { kind: policy } as any);
-  if (!result.ok) return { ok: false as const, res: result.res };
-
-  // For public/cron we don't have a user ctx
-  if (result.principal.kind === "user" || result.principal.kind === "admin") {
-    const ctx = await getAuthContext();
-    if (ctx) return { ok: true as const, ctx };
-  }
-
-  return { ok: true as const, ctx: null as AuthContext | null };
-}
-
-/**
- * Legacy (Stage 1) APIs — kept for compatibility.
- * These throw a Response on failure (existing call-sites may rely on that).
- */
-export async function requireUser(): Promise<AuthContext> {
-  const ctx = await getAuthContext();
-  if (!ctx) {
-    throw new Response(JSON.stringify({ ok: false, error: { status: 401, code: "UNAUTHORIZED", message: "Unauthorized" } }), {
-      status: 401,
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-    });
-  }
   return ctx;
 }
 
-export async function requireAdmin(): Promise<AuthContext> {
-  // Legacy compatibility: enforce via policy engine with a synthetic request is not possible here.
-  // Use policy-based enforcement in routes. This function remains for old lib call-sites.
-  return await requireUser();
+export async function enforcePolicy(req: Request, policy: AuthzPolicy): Promise<AuthContext> {
+  const ctx = await getAuthContext(req, policy);
+
+  if (policy === "public") return ctx;
+
+  if (policy === "cron") {
+    if (!ctx.isCron) {
+      throw new ApiError({
+        status: 401,
+        code: "CRON_UNAUTHORIZED",
+        message: "Cron secret missing or invalid",
+        requestId: ctx.requestId,
+      });
+    }
+    return ctx;
+  }
+
+  if (policy === "auth") {
+    if (!ctx.isAuthed) {
+      throw new ApiError({
+        status: 401,
+        code: "UNAUTHORIZED",
+        message: "Authentication required",
+        requestId: ctx.requestId,
+      });
+    }
+    return ctx;
+  }
+
+  // admin
+  if (!ctx.isAuthed) {
+    throw new ApiError({
+      status: 401,
+      code: "UNAUTHORIZED",
+      message: "Authentication required",
+      requestId: ctx.requestId,
+    });
+  }
+
+  if (!ctx.isAdmin) {
+    throw new ApiError({
+      status: 403,
+      code: "FORBIDDEN",
+      message: "Admin access required",
+      requestId: ctx.requestId,
+    });
+  }
+
+  return ctx;
 }
 
-/** Convenience helpers */
-export async function requireUserId(): Promise<string> {
-  const { userId } = await requireUser();
-  return userId;
-}
+export function logAuthzDenial(opts: {
+  req: Request;
+  policy: AuthzPolicy;
+  requestId?: string;
+  reason: string;
+  meta?: Record<string, unknown>;
+}) {
+  // Keep it simple and structured; integrate into your logger later.
+  const payload = {
+    timestamp: new Date().toISOString(),
+    level: "warn",
+    message: "authz_denied",
+    policy: opts.policy,
+    requestId: opts.requestId,
+    reason: opts.reason,
+    path: new URL(opts.req.url).pathname,
+    method: (opts.req as any).method || undefined,
+    ...opts.meta,
+  };
 
-export async function requireAdminId(): Promise<string> {
-  const { userId } = await requireAdmin();
-  return userId;
+  console.warn(JSON.stringify(payload));
 }

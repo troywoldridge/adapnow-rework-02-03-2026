@@ -3,12 +3,24 @@ import path from "node:path";
 
 export default defineConfig({
   test: {
-    globals: true,
     environment: "node",
-    include: ["src/**/*.test.ts", "src/**/*.integration.test.ts"],
-    exclude: ["**/node_modules/**", "**/e2e/**"],
-    pool: "forks",
-    setupFiles: ["./vitest.setup.ts"],
+    setupFiles: ["./src/test/setup.ts"],
+    globals: true,
+    restoreMocks: true,
+    clearMocks: true,
+    mockReset: true,
+
+    // Only run unit/integration tests with Vitest
+    include: [
+      "src/**/*.{test,spec}.ts",
+      "src/**/*.{test,spec}.tsx",
+    ],
+    exclude: [
+      "e2e/**",
+      "node_modules/**",
+      "dist/**",
+      ".next/**",
+    ],
   },
   resolve: {
     alias: {

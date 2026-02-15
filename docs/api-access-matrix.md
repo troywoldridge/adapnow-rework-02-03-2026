@@ -1,27 +1,60 @@
 # API Access Matrix (Stage 2)
 
-This document defines the canonical access policy for API routes.
+This document describes the **canonical access policy model** for API routes.
 
-Policies:
-- **public**: no session required
-- **auth**: signed-in required
-- **admin**: signed-in + admin required (Clerk `publicMetadata.role=admin` OR `ADMIN_EMAILS` allowlist)
-- **cron**: requires secret (`CRON_SECRET`) via `x-cron-secret` header (or `Authorization: Bearer <secret>`)
+## Policy model
 
-## Current routes in scope
+Policies are enforced by a shared guard:
 
-| Route | Method(s) | Policy | Notes |
-|---|---:|---|---|
-| `/api/jobs/artwork-needed` | POST | cron | Background job trigger |
-| `/api/custom-orders` | POST | public | Public form submission |
-| `/api/quotes/request` | POST | public | Public form submission |
-| `/api/quotes/custom-order` | POST | public | Public form submission |
-| `/api/addresses` | GET/POST | auth | Customer addresses |
-| `/api/addresses/default` | GET/POST | auth | Default address |
-| `/api/addresses/[id]` | GET/PATCH/DELETE | auth | Must belong to user |
+- **public**: no auth required
+- **auth**: signed-in user required
+- **admin**: signed-in user + admin check required
+- **cron**: secret header/bearer required
 
-## Env contracts
+### Admin rules
 
-- `CRON_SECRET` (required for cron policy)
-- `ADMIN_EMAILS` (comma/space separated; optional, but recommended for bootstrap)
-- `ALLOW_ALL_ADMINS` (escape hatch; should only be used temporarily and never in prod)
+A request is considered **admin** if any of the following is true:
+
+- `ALLOW_ALL_ADMINS=true` (escape hatch; intended for local/dev or temporary operations)
+- Clerk `currentUser().publicMetadata.role === "admin"`
+- Any user email matches `ADMIN_EMAILS` allowlist
+
+### Cron rules
+
+Cron policy accepts the secret provided by any of:
+
+- `x-cron-secret` header (canonical)
+- `x-job-secret` header (back-compat)
+- `Authorization: Bearer <secret>` header
+
+Expected secret is read from:
+
+- `CRON_SECRET` (canonical)
+- fallback `JOB_SECRET` (temporary back-compat)
+
+If no expected secret is configured, cron requests are rejected with `CRON_MISCONFIGURED`.
+
+## Response behavior
+
+- Denials return `401 UNAUTHORIZED` or `403 FORBIDDEN` (or `403 CRON_MISCONFIGURED`)
+- Responses should include a requestId for correlation
+- Authz denials are logged with `{ route, policy, requestId }`
+
+## Environment variables
+
+| Variable | Purpose | Notes |
+|---|---|---|
+| `CRON_SECRET` | Cron secret | Canonical |
+| `JOB_SECRET` | Cron secret fallback | Temporary back-compat |
+| `ADMIN_EMAILS` | Comma/space separated allowlist | Lowercased compare |
+| `ALLOW_ALL_ADMINS` | Escape hatch | `true/1/yes/on` |
+
+## Implementation status (Stage 2)
+
+Stage 2 delivers:
+- Policy model implementation
+- Route migrations in batches
+- Unit/integration tests validating policy behavior
+- Observability logging for denials
+- Docs for access expectations and env contract
+
