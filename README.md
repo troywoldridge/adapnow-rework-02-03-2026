@@ -4,88 +4,108 @@ Next.js e-commerce app with Sinalite integration, deployed to Cloudflare.
 
 ---
 
-## Repo verification (canonical)
+## Repo Verification (Canonical)
 
 These commands define the deterministic baseline for development and CI.
 
-Run the full verification suite:
+### Run the full verification suite
 
 ```bash
 pnpm verify
-Run individually:
-
+Run individually
 pnpm lint:ci
 pnpm typecheck
 pnpm test
 pnpm build
 What verify does
-pnpm verify runs:
+The verify script runs the following checks:
 
-pnpm lint:ci (lint must pass with zero warnings)
+pnpm lint:ci → Lint must pass with zero warnings
 
-pnpm typecheck (TypeScript must pass with no emit)
+pnpm typecheck → TypeScript must pass with no emit
 
-pnpm test (Vitest unit/integration tests)
+pnpm test → Vitest unit/integration tests must pass
 
-Internal/debug route protection policy
+Internal / Debug Route Protection Policy
 Some endpoints are intentionally internal (diagnostics, test email sends, etc.).
-These routes must be protected to avoid accidental public access.
+These routes must never be publicly accessible.
 
-Policy:
+Rules
+Internal/debug routes are disabled in production by default
 
-Internal/debug routes are disabled in production by default unless explicitly enabled.
+Internal/debug routes require a shared secret
 
-Internal/debug routes require a shared secret:
+All internal routes must return a consistent error shape
 
-Env: INTERNAL_API_SECRET
+Secret requirements
+Environment variable:
 
-Request header: x-internal-secret: <secret>
+INTERNAL_API_SECRET
+Request options:
 
-(Optional for local tooling) Query: ?secret=<secret>
+x-internal-secret: <secret>
+Optional (local tooling):
 
-Error responses must be consistent JSON:
-
-{ "ok": false, "error": { "code": "UNAUTHORIZED", "message": "...", "details": null } }
-Required envs for internal routes
-INTERNAL_API_SECRET (recommended for all environments; required in prod if any internal routes are enabled)
-
+?secret=<secret>
+Error response format
+{
+  "ok": false,
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "...",
+    "details": null
+  }
+}
 Database
-Schema is managed by Drizzle ORM. Source of truth: src/lib/db/schema/.
+Schema is managed by Drizzle ORM.
 
+Source of truth:
+
+src/lib/db/schema/
 Migration workflow
-Generate migrations after schema changes:
+Generate migrations:
 
 DATABASE_URL=postgresql://... pnpm db:generate
-Apply migrations (production/preview):
+Apply migrations:
 
 DATABASE_URL=postgresql://... pnpm db:migrate
-Push schema directly (development only – skips migration files):
+Push schema directly (development only):
 
 DATABASE_URL=postgresql://... pnpm db:push
-Legacy scripts/migrations/*.sql are deprecated; use Drizzle migrations instead.
+Legacy SQL migrations in scripts/migrations/ are deprecated.
 
 Tests
+Run tests:
+
 pnpm test
-Unit and integration tests use Vitest. Integration tests mock server-only, DB, and Sinalite. For tests requiring a real DB, set DATABASE_URL or TEST_DATABASE_URL.
+Unit and integration tests use Vitest.
 
-Getting Started
-Read the documentation at https://opennext.js.org/cloudflare.
+Integration tests mock:
 
+server-only
+
+database
+
+Sinalite API
+
+For DB-backed tests, set:
+
+DATABASE_URL
+or
+
+TEST_DATABASE_URL
 Develop
-Run the Next.js development server:
+Start the dev server:
 
 pnpm dev
-Open http://localhost:3000 with your browser to see the result.
+Open:
 
-Preview
-Preview the application locally on the Cloudflare runtime:
-
+http://localhost:3000
+Preview (Cloudflare runtime)
 pnpm preview
 Deploy
-Deploy the application to Cloudflare:
-
 pnpm deploy
-See .env.example for required environment variables. Key vars include:
+Required environment variables (see .env.example):
 
 DATABASE_URL
 
@@ -101,35 +121,45 @@ CLERK_SECRET_KEY
 
 Health Check
 GET /api/health
-Returns 200 when DB is reachable; 503 when DB is down. Optionally checks Sinalite connectivity (sinalite: "ok" | "skip" | "error"). Set LOG_LEVEL (debug | info | warn | error) to control log verbosity.
+Returns:
 
+200 when DB is reachable
+
+503 when DB is unavailable
+
+Optional Sinalite connectivity check:
+
+sinalite: "ok" | "skip" | "error"
+Log level can be configured via:
+
+LOG_LEVEL=debug|info|warn|error
 Scripts
 Script	Purpose
 pnpm dev	Start dev server
-pnpm build	Build for production
+pnpm build	Production build
 pnpm lint	Run Next lint
 pnpm lint:ci	Lint with zero warnings
-pnpm typecheck	TypeScript typecheck (no emit)
+pnpm typecheck	TypeScript typecheck
 pnpm verify	Lint + typecheck + tests
 pnpm db:generate	Generate Drizzle migration
 pnpm db:migrate	Apply migrations
 pnpm db:push	Push schema (dev only)
 pnpm db:studio	Drizzle Studio
 pnpm sinalite:auth	Authenticate to Sinalite
-pnpm sinalite:ingest	Ingest products from Sinalite (loads env via dotenv/config)
-pnpm sinalite:ingest:dry	Ingest products (dry run)
+pnpm sinalite:ingest	Ingest Sinalite products
+pnpm sinalite:ingest:dry	Dry-run ingestion
 pnpm sinalite:variants	Capture Sinalite variants
-pnpm test	Run unit/integration tests
-pnpm test:watch	Run Vitest in watch mode
-pnpm e2e	Run Playwright E2E tests
-pnpm preview	Local Cloudflare runtime preview
-pnpm deploy	Build + deploy to Cloudflare
-pnpm upload	Build + upload to Cloudflare
+pnpm test	Run tests
+pnpm test:watch	Vitest watch mode
+pnpm e2e	Playwright E2E tests
+pnpm preview	Cloudflare preview runtime
+pnpm deploy	Deploy to Cloudflare
+pnpm upload	Upload to Cloudflare
 Learn More
-To learn more about Next.js, take a look at:
+Next.js resources:
 
-Next.js Documentation: https://nextjs.org/docs
+https://nextjs.org/docs
 
-Learn Next.js: https://nextjs.org/learn
+https://nextjs.org/learn
 
-Next.js GitHub: https://github.com/vercel/next.js
+https://github.com/vercel/next.js
