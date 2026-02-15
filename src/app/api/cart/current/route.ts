@@ -7,7 +7,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { logger, withRequestId } from "@/lib/logger";
-import { getRequestId } from "@/lib/apiError";
+import { getRequestId } from "@/lib/requestId";
 import { carts, cartLines, cartAttachments } from "@/lib/db/schema";
 
 import { getProductsByIds } from "@/lib/productResolver";

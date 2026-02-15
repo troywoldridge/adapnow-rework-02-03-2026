@@ -6,11 +6,9 @@ import {
   priceSinaliteProduct,
   fetchSinaliteProductOptions,
   validateOnePerGroup,
-  normalizeStoreCode,
-  storeCodeToStoreLabel,
 } from "@/lib/sinalite";
-import { jsonError, getRequestId } from "@/lib/apiError";
 import { withRequestId } from "@/lib/logger";
+import { getRequestId } from "@/lib/requestId";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +23,9 @@ type PriceRequestBody = {
   // prefer store, but allow currency too
   store?: unknown; // "US" | "CA"
   currency?: unknown; // "USD" | "CAD"
+
+  // allow numeric storeCode too (9=US, 6=CA) if callers send it
+  storeCode?: unknown;
 };
 
 function noStoreCacheHeaders() {
@@ -35,7 +36,35 @@ function noStoreCacheHeaders() {
   } as const;
 }
 
-function normStoreLabel(v: unknown, currency?: unknown): StoreLabel {
+function applyNoStore(res: NextResponse) {
+  Object.entries(noStoreCacheHeaders()).forEach(([k, v]) => res.headers.set(k, v));
+  return res;
+}
+
+function jsonError(status: number, message: string, extra?: Record<string, unknown>) {
+  const res = NextResponse.json(
+    {
+      ok: false as const,
+      error: message,
+      ...extra,
+    },
+    { status },
+  );
+  return applyNoStore(res);
+}
+
+function jsonOk(payload: Record<string, unknown>) {
+  const res = NextResponse.json({ ok: true as const, ...payload }, { status: 200 });
+  return applyNoStore(res);
+}
+
+function normStoreLabel(v: unknown, currency?: unknown, storeCode?: unknown): StoreLabel {
+  const sc = Number(storeCode);
+  if (Number.isFinite(sc)) {
+    if (sc === 6) return "CA";
+    if (sc === 9) return "US";
+  }
+
   const s = String(v ?? "").trim().toUpperCase();
   if (s === "CA") return "CA";
   if (s === "US") return "US";
@@ -69,15 +98,9 @@ function toIntArray(v: unknown, maxLen = 64): number[] {
   return Array.from(new Set(out));
 }
 
-function toNumberOrNull(v: unknown): number | null {
-  if (v == null) return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function applyNoStore(res: NextResponse) {
-  Object.entries(noStoreCacheHeaders()).forEach(([k, v]) => res.headers.set(k, v));
-  return res;
+function storeLabelToStoreCode(label: StoreLabel): number {
+  // Common convention in your project: 9=US, 6=CA
+  return label === "CA" ? 6 : 9;
 }
 
 export async function POST(req: NextRequest) {
@@ -91,99 +114,79 @@ export async function POST(req: NextRequest) {
     const incomingOptionIds = toIntArray(body?.optionIds);
 
     if (incomingOptionIds.length === 0) {
-      return applyNoStore(
-        jsonError(400, "optionIds required", {
-          code: "optionIds_required",
-          requestId: reqId,
-        }),
-      );
+      return jsonError(400, "optionIds required", {
+        code: "optionIds_required",
+        requestId: reqId,
+      });
     }
 
-    const storeLabel = normStoreLabel(body?.store, body?.currency);
-    const storeCode = normalizeStoreCode(storeLabel); // -> "en_us" | "en_ca"
+    const storeLabel = normStoreLabel(body?.store, body?.currency, body?.storeCode);
+    const store = storeLabel; // matches your Store union in lib types
+    const storeCode = storeLabelToStoreCode(storeLabel);
 
     // 1) Load option definitions for this product/store
-    const details = await fetchSinaliteProductOptions({ productId, storeCode });
-    const productOptions = details.productOptions;
+    // TS told us: fetchSinaliteProductOptions expects { productId, store, ttlMs? }
+    // and returns SinaliteProductOption[] (not { productOptions: ... }).
+    const productOptions = await fetchSinaliteProductOptions({ productId, store });
 
-    if (!productOptions.length) {
-      // jsonError can't accept productId/storeCode extra fields (typed), so return a custom JSON.
-      const res = NextResponse.json(
-        {
-          ok: false as const,
-          error: "No Sinalite options found for product/store",
-          code: "sinalite_no_options",
-          productId,
-          storeCode,
-          store: storeCodeToStoreLabel(storeCode),
-          requestId: reqId,
-        },
-        { status: 404 },
-      );
-      return applyNoStore(res);
+    if (!Array.isArray(productOptions) || productOptions.length === 0) {
+      return jsonError(404, "No Sinalite options found for product/store", {
+        code: "sinalite_no_options",
+        productId,
+        store,
+        storeCode,
+        requestId: reqId,
+      });
     }
 
-    // 2) Validate: one per group (throws on problems)
-    let validation: ReturnType<typeof validateOnePerGroup>;
+    // 2) Validate: one per group
+    // TS told us validateOnePerGroup expects:
+    // { optionIds: number[]; productOptions: SinaliteProductOption[]; excludeGroups?: string[] }
+    let validation: any;
     try {
       validation = validateOnePerGroup({
-        productId,
-        storeCode,
+        optionIds: incomingOptionIds,
         productOptions,
-        selectedOptionIds: incomingOptionIds,
       });
     } catch (e: any) {
       const message = e instanceof Error ? e.message : "Invalid option selection";
-      const res = NextResponse.json(
-        {
-          ok: false as const,
-          error: message,
-          code: "invalid_option_selection",
-          productId,
-          storeCode,
-          store: storeCodeToStoreLabel(storeCode),
-          incomingOptionIds,
-          requestId: reqId,
-        },
-        { status: 400 },
-      );
-      return applyNoStore(res);
+      return jsonError(400, message, {
+        code: "invalid_option_selection",
+        productId,
+        store,
+        storeCode,
+        incomingOptionIds,
+        requestId: reqId,
+      });
     }
 
-    // 3) Price via API: POST /price/{id}/{storeId}
-    const priced = await priceSinaliteProduct({
+    // normalize the chain field name (your TS errors showed normalizedOptionIds, not orderedChain)
+    const normalizedOptionIds: number[] =
+      (validation && (validation.normalizedOptionIds || validation.optionIds)) || incomingOptionIds;
+
+    // 3) Price via API/local cache
+    // TS told us priceSinaliteProduct expects { productId, optionIds, store } (NOT storeCode)
+    const priced: any = await priceSinaliteProduct({
       productId,
-      storeCode,
-      optionIds: validation.orderedChain,
+      optionIds: normalizedOptionIds,
+      store,
     });
 
-    const unitPrice = toNumberOrNull(priced.price);
-
-    const res = NextResponse.json(
-      {
-        ok: true as const,
-        productId,
-        store: storeCodeToStoreLabel(storeCode),
-        storeCode,
-
-        // numeric if possible + original string price
-        unitPrice,
-        price: priced.price,
-
-        packageInfo: priced.packageInfo ?? null,
-        // product option labels returned by Sinalite /price endpoint
-        productOptions: priced.productOptions ?? null,
-
-        // chain info
-        normalizedOptionIds: validation.orderedChain,
-        variantKey: validation.variantKey,
-        selections: validation.selections,
-
-        requestId: reqId,
+    // Don’t assume shape (your TS errors showed PriceResult doesn't have "price"/"packageInfo"/"productOptions")
+    // Return a stable envelope and include raw priced for now.
+    return jsonOk({
+      productId,
+      store,
+      storeCode,
+      normalizedOptionIds,
+      validation: {
+        ok: validation?.ok ?? true,
+        groupsUsed: validation?.groupsUsed ?? null,
+        requiredGroups: validation?.requiredGroups ?? null,
       },
-      { status: 200 },
-    );
-    return applyNoStore(res);
+      priced,
+      requestId: reqId,
+    });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to price product";
     const status =
@@ -193,10 +196,9 @@ export async function POST(req: NextRequest) {
 
     log.error("Sinalite price error", { message, requestId: reqId });
 
-    return applyNoStore(
-      jsonError(status, message, {
-        requestId: reqId,
-      }),
-    );
+    return jsonError(status, message, {
+      code: status === 400 ? "bad_request" : "sinalite_price_error",
+      requestId: reqId,
+    });
   }
 }

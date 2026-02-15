@@ -47,3 +47,6 @@ tsconfig.tsbuildinfo
 /table_data/sinalite_api_export/
 /table_data/sinalite_categorized_export/
 
+
+# TS incremental build artifacts
+*.tsbuildinfo

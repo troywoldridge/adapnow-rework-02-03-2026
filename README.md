@@ -2,97 +2,164 @@
 
 Next.js e-commerce app with Sinalite integration, deployed to Cloudflare.
 
-## Database
+---
 
-Schema is managed by [Drizzle ORM](https://orm.drizzle.team/). Source of truth: `src/lib/db/schema/`.
+## Repo Verification (Canonical)
 
-### Migration workflow
+These commands define the deterministic baseline for development and CI.
 
-1. **Generate migrations** after schema changes:
-   ```bash
-   DATABASE_URL=postgresql://... pnpm db:generate
-   ```
-2. **Apply migrations** (production/preview):
-   ```bash
-   DATABASE_URL=postgresql://... pnpm db:migrate
-   ```
-3. **Push schema directly** (development only – skips migration files):
-   ```bash
-   DATABASE_URL=postgresql://... pnpm db:push
-   ```
-
-> Legacy `scripts/migrations/*.sql` are deprecated; use Drizzle migrations instead.
-
-## Tests
+### Run the full verification suite
 
 ```bash
+pnpm verify
+Run individually
+pnpm lint:ci
+pnpm typecheck
 pnpm test
-```
+pnpm build
+What verify does
+The verify script runs the following checks:
 
-Unit and integration tests use [Vitest](https://vitest.dev/). Integration tests mock `server-only`, DB, and Sinalite. For tests requiring a real DB, set `DATABASE_URL` or `TEST_DATABASE_URL`.
+pnpm lint:ci → Lint must pass with zero warnings
 
-## Getting Started
+pnpm typecheck → TypeScript must pass with no emit
 
-Read the documentation at https://opennext.js.org/cloudflare.
+pnpm test → Vitest unit/integration tests must pass
 
-## Develop
+Internal / Debug Route Protection Policy
+Some endpoints are intentionally internal (diagnostics, test email sends, etc.).
+These routes must never be publicly accessible.
 
-Run the Next.js development server:
+Rules
+Internal/debug routes are disabled in production by default
 
-```bash
-npm run dev
-# or similar package manager command
-```
+Internal/debug routes require a shared secret
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+All internal routes must return a consistent error shape
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Secret requirements
+Environment variable:
 
-## Preview
+INTERNAL_API_SECRET
+Request options:
 
-Preview the application locally on the Cloudflare runtime:
+x-internal-secret: <secret>
+Optional (local tooling):
 
-```bash
-npm run preview
-# or similar package manager command
-```
+?secret=<secret>
+Error response format
+{
+  "ok": false,
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "...",
+    "details": null
+  }
+}
+Database
+Schema is managed by Drizzle ORM.
 
-## Deploy
+Source of truth:
 
-Deploy the application to Cloudflare:
+src/lib/db/schema/
+Migration workflow
+Generate migrations:
 
-```bash
+DATABASE_URL=postgresql://... pnpm db:generate
+Apply migrations:
+
+DATABASE_URL=postgresql://... pnpm db:migrate
+Push schema directly (development only):
+
+DATABASE_URL=postgresql://... pnpm db:push
+Legacy SQL migrations in scripts/migrations/ are deprecated.
+
+Tests
+Run tests:
+
+pnpm test
+Unit and integration tests use Vitest.
+
+Integration tests mock:
+
+server-only
+
+database
+
+Sinalite API
+
+For DB-backed tests, set:
+
+DATABASE_URL
+or
+
+TEST_DATABASE_URL
+Develop
+Start the dev server:
+
+pnpm dev
+Open:
+
+http://localhost:3000
+Preview (Cloudflare runtime)
+pnpm preview
+Deploy
 pnpm deploy
-```
+Required environment variables (see .env.example):
 
-See `.env.example` for required environment variables. Key vars: `DATABASE_URL`, `SINALITE_CLIENT_ID`, `SINALITE_CLIENT_SECRET`, `STRIPE_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`.
+DATABASE_URL
 
-## Health Check
+SINALITE_CLIENT_ID
 
-```
+SINALITE_CLIENT_SECRET
+
+STRIPE_SECRET_KEY
+
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+
+CLERK_SECRET_KEY
+
+Health Check
 GET /api/health
-```
+Returns:
 
-Returns 200 when DB is reachable; 503 when DB is down. Optionally checks Sinalite connectivity (`sinalite: "ok" | "skip" | "error"`). Set `LOG_LEVEL` (debug | info | warn | error) to control log verbosity.
+200 when DB is reachable
 
-## Scripts
+503 when DB is unavailable
 
-| Script | Purpose |
-|--------|---------|
-| `pnpm dev` | Start dev server |
-| `pnpm build` | Build for production |
-| `pnpm db:generate` | Generate Drizzle migration |
-| `pnpm db:migrate` | Apply migrations |
-| `pnpm db:push` | Push schema (dev only) |
-| `pnpm sinalite:ingest` | Ingest products from Sinalite |
-| `pnpm test` | Run unit/integration tests |
-| `pnpm e2e` | Run Playwright E2E tests (starts dev server) |
+Optional Sinalite connectivity check:
 
-## Learn More
+sinalite: "ok" | "skip" | "error"
+Log level can be configured via:
 
-To learn more about Next.js, take a look at the following resources:
+LOG_LEVEL=debug|info|warn|error
+Scripts
+Script	Purpose
+pnpm dev	Start dev server
+pnpm build	Production build
+pnpm lint	Run Next lint
+pnpm lint:ci	Lint with zero warnings
+pnpm typecheck	TypeScript typecheck
+pnpm verify	Lint + typecheck + tests
+pnpm db:generate	Generate Drizzle migration
+pnpm db:migrate	Apply migrations
+pnpm db:push	Push schema (dev only)
+pnpm db:studio	Drizzle Studio
+pnpm sinalite:auth	Authenticate to Sinalite
+pnpm sinalite:ingest	Ingest Sinalite products
+pnpm sinalite:ingest:dry	Dry-run ingestion
+pnpm sinalite:variants	Capture Sinalite variants
+pnpm test	Run tests
+pnpm test:watch	Vitest watch mode
+pnpm e2e	Playwright E2E tests
+pnpm preview	Cloudflare preview runtime
+pnpm deploy	Deploy to Cloudflare
+pnpm upload	Upload to Cloudflare
+Learn More
+Next.js resources:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+https://nextjs.org/docs
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+https://nextjs.org/learn
+
+https://github.com/vercel/next.js
