@@ -50,3 +50,6 @@ tsconfig.tsbuildinfo
 
 # TS incremental build artifacts
 *.tsbuildinfo
+
+# TypeScript build info
+tsconfig.ci.tsbuildinfo
