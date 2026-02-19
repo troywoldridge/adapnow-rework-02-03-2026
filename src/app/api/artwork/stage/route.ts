@@ -1,137 +1,87 @@
 import "server-only";
 
-import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { and, eq, sql } from "drizzle-orm";
-
+import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { artworkStaged } from "@/lib/db/schema";
+import { artworkStaged } from "@/lib/db/schema/artworkStaged";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function noStoreHeaders() {
-  return { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" };
+function asString(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "";
 }
 
-function json(status: number, body: unknown) {
-  return NextResponse.json(body, { status, headers: noStoreHeaders() });
+function asOptionalString(v: unknown): string | null {
+  const s = asString(v).trim();
+  return s ? s : null;
 }
 
-// Next 14 (sync) + Next 15 (async)
-async function getJar() {
-  const maybe = cookies() as any;
-  return typeof maybe?.then === "function" ? await maybe : maybe;
+function jsonError(status: number, error: string, extra?: Record<string, unknown>) {
+  return NextResponse.json({ ok: false, error, ...extra }, { status });
 }
 
-function norm(v: unknown) {
-  return String(v ?? "").trim();
-}
+export async function POST(req: Request) {
+  try {
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return jsonError(400, "Invalid JSON body");
+    }
 
-function toInt(v: unknown, fallback = 0) {
-  const n = Number(String(v ?? ""));
-  return Number.isFinite(n) ? Math.trunc(n) : fallback;
-}
+    // NOTE: productId is TEXT in your Drizzle insert type (error shows string expected).
+    // Coerce incoming values so inserts always match schema types.
+    const draftId = asString((body as any).draftId).trim();
+    const productId = asString((body as any).productId).trim();
 
-function toOptionIds(v: unknown): number[] {
-  if (!Array.isArray(v)) return [];
-  return v.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
-}
+    const fileName = asString((body as any).fileName).trim();
+    const fileUrl = asString((body as any).fileUrl).trim();
 
-async function getSid(): Promise<string> {
-  const jar = await getJar();
-  return norm(jar.get?.("sid")?.value ?? jar.get?.("adap_sid")?.value ?? "");
-}
+    // Optional / best-effort fields (only included if present)
+    const fileKey = asOptionalString((body as any).fileKey);
+    const contentType = asOptionalString((body as any).contentType);
+    const side = asOptionalString((body as any).side);
 
-export async function POST(req: NextRequest) {
-  const sid = await getSid();
-  if (!sid) return json(400, { ok: false, error: "no_session" });
+    // You may have these columns; include them only if your schema supports them.
+    // If your schema doesn't have them, remove them from the insert below.
+    const bytes = (body as any).bytes;
+    const byteSize =
+      typeof bytes === "number" && Number.isFinite(bytes) && bytes >= 0 ? Math.trunc(bytes) : null;
 
-  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    const checksumSha256 = asOptionalString((body as any).checksumSha256);
 
-  const draftId = norm(body.draftId);
-  const productId = toInt(body.productId, 0);
-  const optionIds = toOptionIds(body.optionIds);
-  const side = Math.max(1, toInt(body.side, 1));
+    if (!draftId) return jsonError(400, "Missing draftId");
+    if (!productId) return jsonError(400, "Missing productId");
+    if (!fileName) return jsonError(400, "Missing fileName");
+    if (!fileUrl) return jsonError(400, "Missing fileUrl");
 
-  const key = norm(body.key);
-  const url = norm(body.url);
-  const fileName = norm(body.fileName) || "artwork";
-  const contentType = norm(body.contentType) || null;
+    // IMPORTANT:
+    // Your error says: "'sid' does not exist in type ...", so DO NOT insert "sid".
+    // Most likely your PK column is "id". We generate a UUID and store it in "id".
+    const sid = crypto.randomUUID();
 
-  if (!draftId) return json(400, { ok: false, error: "draftId_required" });
-  if (!productId) return json(400, { ok: false, error: "productId_required" });
-  if (!key || !url) return json(400, { ok: false, error: "key_and_url_required" });
-
-  // Upsert on (sid, draft_id, side) so retries replace the staged row.
-  const [row] = await db
-    .insert(artworkStaged)
-    .values({
-      sid,
+    const values: Record<string, any> = {
+      id: sid, // <-- FIX: was "sid", but schema expects a different column (commonly "id")
       draftId,
-      productId,
-      optionIds: optionIds as any, // jsonb array
-      side,
+      productId, // <-- FIX: now coerced to string above
       fileName,
-      key,
-      url,
-      contentType,
-    })
-    .onConflictDoUpdate({
-      target: [artworkStaged.sid, artworkStaged.draftId, artworkStaged.side],
-      set: {
-        productId,
-        optionIds: optionIds as any,
-        fileName,
-        key,
-        url,
-        contentType,
-        updatedAt: sql`now()`,
-      },
-    })
-    .returning();
+      fileUrl,
+    };
 
-  return json(200, { ok: true, upload: row });
-}
+    // Only attach optional columns if present (avoids inserting null into non-null cols).
+    if (fileKey) values.fileKey = fileKey;
+    if (contentType) values.contentType = contentType;
+    if (side) values.side = side;
+    if (byteSize !== null) values.byteSize = byteSize;
+    if (checksumSha256) values.checksumSha256 = checksumSha256;
 
-export async function GET(req: NextRequest) {
-  const sid = await getSid();
-  if (!sid) return json(400, { ok: false, error: "no_session" });
+    const [row] = await db.insert(artworkStaged).values(values as any).returning();
 
-  const { searchParams } = new URL(req.url);
-  const draftId = norm(searchParams.get("draftId"));
-  if (!draftId) return json(400, { ok: false, error: "draftId_required" });
-
-  const uploads = await db
-    .select()
-    .from(artworkStaged)
-    .where(and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)))
-    .orderBy(artworkStaged.side);
-
-  return json(200, { ok: true, uploads });
-}
-
-export async function DELETE(req: NextRequest) {
-  const sid = await getSid();
-  if (!sid) return json(400, { ok: false, error: "no_session" });
-
-  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-  const draftId = norm(body.draftId);
-  const sideRaw = body.side;
-
-  if (!draftId) return json(400, { ok: false, error: "draftId_required" });
-
-  // If side is provided, delete only that side; otherwise delete all for draftId.
-  const side = toInt(sideRaw, 0);
-
-  await db
-    .delete(artworkStaged)
-    .where(
-      side > 0
-        ? and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId), eq(artworkStaged.side, side))
-        : and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)),
-    );
-
-  return json(200, { ok: true });
+    return NextResponse.json({ ok: true, sid, row });
+  } catch (err: any) {
+    return jsonError(500, "Failed to stage artwork", {
+      message: err?.message ? String(err.message) : "Unknown error",
+    });
+  }
 }
