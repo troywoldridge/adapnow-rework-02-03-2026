@@ -8,7 +8,8 @@ import { auth } from "@clerk/nextjs/server";
 import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { productReviews, reviewHelpfulVotes } from "@/lib/db/schema/reviews";
+import { productReviews } from "@/lib/db/schema";
+
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

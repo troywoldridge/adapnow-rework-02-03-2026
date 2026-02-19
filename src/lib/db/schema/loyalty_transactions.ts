@@ -1,17 +1,10 @@
 // src/lib/db/schema/loyalty_transactions.ts
-import { pgTable, uuid, text, integer, timestamp, index, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 import { orders } from "./orders";
 import { loyaltyWallets } from "./loyalty_wallets";
-
-export const loyaltyReason = pgEnum("loyalty_reason", [
-  "purchase",
-  "refund",
-  "adjustment",
-  "signup",
-  "promotion",
-]);
+import { loyaltyReason } from "./enums"; // canonical enum lives in enums.ts
 
 export const loyaltyTransactions = pgTable(
   "loyalty_transactions",

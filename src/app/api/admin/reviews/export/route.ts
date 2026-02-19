@@ -7,7 +7,8 @@ import { z } from "zod";
 import { desc } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { productReviews } from "@/lib/db/schema/productReviews";
+import { productReviews } from "@/lib/db/schema";
+
 import { requireAdmin } from "@/lib/requireAdmin";
 
 // json2csv runtime import (TS types often missing in some setups)

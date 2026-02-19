@@ -1,35 +1,46 @@
 // src/lib/db/schema/index.ts
-// Central export barrel for Drizzle schema.
-// IMPORTANT: avoid duplicate named exports across modules (TS2308).
+// CLEAN canonical Drizzle export surface (no ambiguous re-exports)
 
+export * from "./types";
 export * from "./enums";
 
-// Export tables/relations/etc
+/* ---------------- Core ---------------- */
 export * from "./addresses";
-export * from "./artwork_staged";
-export * from "./artwork_uploads";
-export * from "./cart_artwork";
-// export * from "./carts";
-// export * from "./cart_lines";
-// export * from "./cart_attachments";
-// export * from "./customers";
-// export * from "./email_deliveries";
-// export * from "./email_outbox";
-// export * from "./guide_download_events";
+
+/* ---------------- Cart ---------------- */
+export * from "./cart";            // carts
+export * from "./cartLines";       // cartLines
+export * from "./cartCredits";     // cartCredits
+export * from "./cartAttachments"; // cartAttachments
+export * from "./cart_artwork";    // cartArtwork
+
+/* ---------------- Artwork ---------------- */
+export * from "./artwork_uploads"; // artworkUploads
+export * from "./artwork_staged";  // artworkStaged shim
+
+/* ---------------- Customer ---------------- */
+export * from "./customer";
+export * from "./customerAddresses";
+
+/* ---------------- Orders ---------------- */
 export * from "./orders";
-// export * from "./order_items";
+export * from "./orderItems";
+export * from "./orderSessions";
+
+/* ---------------- Loyalty ---------------- */
+export * from "./loyalty_wallets";
+export * from "./loyalty_transactions"; // now safe: no loyaltyReason export inside this module
+
+/* ---------------- Marketing ---------------- */
+export * from "./heroEvents";
+
+/* ---------------- Pricing + Reviews ---------------- */
+export * from "./price_tiers";
+export * from "./product_reviews";
+
+/* ---------------- Leads ---------------- */
 export * from "./quote_requests";
 export * from "./custom_order_requests";
 
-// loyalty_transactions conflicts with enums (loyaltyReason). Export it explicitly to avoid collisions.
-export {
-  loyaltyTransactions,
-  // If you have other exports from loyalty_transactions, list them here:
-  // loyaltyTransactionItems,
-  // loyaltyTransactionInsertSchema,
-  // loyaltyTransactionSelectSchema,
-} from "./loyalty_transactions";
-
-// export * from "./products";
-
-// export * from "./users";
+/* ---------------- Sinalite ---------------- */
+export * from "./sinaliteProducts";

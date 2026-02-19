@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { productReviews } from "@/lib/db/schema/productReviews"; // adjust path if different
+import { productReviews } from "@/lib/db/schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

@@ -1,0 +1,28 @@
+/**
+ * Wrangler config
+ * Cloudflare docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+ * OpenNext docs: https://opennext.js.org/cloudflare
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "adapnow-rework-02-03-2026",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-12-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".open-next/assets"
+  },
+  "images": {
+    "binding": "IMAGES"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "adapnow-rework-02-03-2026"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

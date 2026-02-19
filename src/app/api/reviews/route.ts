@@ -7,7 +7,8 @@ import { z } from "zod";
 import { desc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { productReviews } from "@/lib/db/schema/productReviews";
+import { productReviews } from "@/lib/db/schema";
+
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
