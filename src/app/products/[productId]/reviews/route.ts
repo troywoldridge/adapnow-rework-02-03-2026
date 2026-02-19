@@ -37,21 +37,23 @@ function coerceSort(v: string | null): "latest" | "oldest" | "highest" | "lowest
   return "latest";
 }
 
-function coerceProductId(paramsProductId: string): number | null {
+function coerceProductId(paramsProductId: string): string | null {
   const raw = String(paramsProductId || "").trim();
   if (!raw) return null;
+  // product_reviews.product_id is varchar/string in your schema
+  return raw.slice(0, 128);
+}
 
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return null;
-
-  return Math.floor(n);
+function toIso(d: unknown): string {
+  return d instanceof Date ? d.toISOString() : String(d ?? "");
 }
 
 // GET: Fetch approved reviews for a product with sort & pagination
 export async function GET(req: NextRequest, context: { params: Promise<{ productId: string }> }) {
   const params = await context.params;
-  const productIdNum = coerceProductId(params.productId);
-  if (productIdNum == null) {
+  const productId = coerceProductId(params.productId);
+
+  if (productId == null) {
     return json({ error: "Invalid productId" }, { status: 422 });
   }
 
@@ -71,34 +73,32 @@ export async function GET(req: NextRequest, context: { params: Promise<{ product
       : desc(productReviews.createdAt); // latest default
 
   try {
-    // IMPORTANT: Select explicit columns so we don't leak internal/moderation fields.
-    // Adjust field names here to match your schema exactly.
+    // Schema-aligned fields only (no title/body/reviewerName/helpfulCount).
     const reviews = await db
       .select({
         id: productReviews.id,
         productId: productReviews.productId,
+        name: productReviews.name,
         rating: productReviews.rating,
-        title: productReviews.title,
-        body: productReviews.body,
-        reviewerName: productReviews.reviewerName,
+        comment: productReviews.comment,
         createdAt: productReviews.createdAt,
-        helpfulCount: productReviews.helpfulCount,
+        verified: productReviews.verified,
       })
       .from(productReviews)
-      .where(and(eq(productReviews.productId, productIdNum), eq(productReviews.approved, true)))
-      .orderBy(orderBy)
+      .where(and(eq(productReviews.productId, productId), eq(productReviews.approved, true)))
+      .orderBy(orderBy, desc(productReviews.id))
       .limit(pageSize)
       .offset(offset);
 
     const countRows = await db
       .select({ count: sql<number>`COUNT(*)::int` })
       .from(productReviews)
-      .where(and(eq(productReviews.productId, productIdNum), eq(productReviews.approved, true)));
+      .where(and(eq(productReviews.productId, productId), eq(productReviews.approved, true)));
 
     const total = countRows?.[0]?.count ?? 0;
 
     return json({
-      reviews,
+      reviews: reviews.map((r) => ({ ...r, createdAt: toIso(r.createdAt) })),
       total,
       page,
       pageSize,

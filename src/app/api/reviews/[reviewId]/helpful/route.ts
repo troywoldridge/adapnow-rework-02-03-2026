@@ -9,7 +9,7 @@ import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { productReviews } from "@/lib/db/schema";
-
+import { reviewHelpfulVotes } from "@/lib/db/schema/reviewHelpfulVotes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,18 +19,6 @@ export const revalidate = 0;
  * POST /api/reviews/:reviewId/helpful
  *
  * Records a "helpful" vote (idempotent per reviewId + voterFingerprint).
- *
- * Future-proof upgrades:
- * - requestId included in all responses + header.
- * - strict param/body validation (Zod).
- * - stable envelope: { ok, requestId, ... }
- * - server-side fingerprint generation if not supplied.
- * - idempotent insert via ON CONFLICT DO NOTHING.
- * - returns current helpful vote count.
- *
- * Security notes:
- * - This is intentionally low-friction; still, the unique constraint prevents spam from the same fingerprint.
- * - If you later add downvotes, expand body schema and store isHelpful=false.
  */
 
 function getRequestId(req: NextRequest): string {
@@ -59,25 +47,21 @@ const BodySchema = z
   .object({
     // Optional client-supplied fingerprint (helps idempotency across networks)
     fingerprint: z.string().trim().max(128).optional(),
-    // Optional future expansion:
-    // isHelpful: z.boolean().optional(),
   })
   .strict()
   .optional();
 
 function normalizeFingerprint(v: unknown): string {
   const s = typeof v === "string" ? v.trim() : "";
-  // Keep it short and predictable for DB uniqueness.
-  // If they send a long hash, we clip.
   return s ? s.slice(0, 64) : "";
 }
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ reviewId: string }> }) {
-  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {
-    const p = ParamsSchema.safeParse(ctx.params);
+    const params = await ctx.params;
+    const p = ParamsSchema.safeParse(params);
     if (!p.success) {
       return NextResponse.json(
         {
@@ -86,7 +70,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ reviewId: 
           error: "invalid_review_id",
           issues: p.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
         },
-        { status: 400, headers: { "x-request-id": requestId } }
+        { status: 400, headers: { "x-request-id": requestId } },
       );
     }
 
@@ -103,14 +87,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ reviewId: 
     if (!rev) {
       return NextResponse.json(
         { ok: false as const, requestId, error: "review_not_found" },
-        { status: 404, headers: { "x-request-id": requestId } }
+        { status: 404, headers: { "x-request-id": requestId } },
       );
     }
 
     const { userId } = await auth();
 
-    const json = await req.json().catch(() => null);
-    const b = BodySchema?.safeParse(json);
+    const payload = await req.json().catch(() => null);
+    const b = BodySchema?.safeParse(payload);
     if (b && !b.success) {
       return NextResponse.json(
         {
@@ -119,7 +103,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ reviewId: 
           error: "invalid_body",
           issues: b.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
         },
-        { status: 400, headers: { "x-request-id": requestId } }
+        { status: 400, headers: { "x-request-id": requestId } },
       );
     }
 
@@ -136,7 +120,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ reviewId: 
         .digest("hex")
         .slice(0, 64);
 
-    // Insert vote idempotently.
+    // Insert vote idempotently via unique index on (reviewId, voterFingerprint)
     await db
       .insert(reviewHelpfulVotes)
       .values({
@@ -157,13 +141,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ reviewId: 
 
     return NextResponse.json(
       { ok: true as const, requestId, reviewId: reviewIdNum, votes: c, fingerprint: fp },
-      { status: 200, headers: { "x-request-id": requestId } }
+      { status: 200, headers: { "x-request-id": requestId } },
     );
   } catch (err: any) {
     const message = String(err?.message || err);
     return NextResponse.json(
       { ok: false as const, requestId, error: message || "server_error" },
-      { status: 500, headers: { "x-request-id": requestId } }
+      { status: 500, headers: { "x-request-id": requestId } },
     );
   }
 }
@@ -172,7 +156,7 @@ async function methodNotAllowed(req: NextRequest) {
   const requestId = getRequestId(req);
   return NextResponse.json(
     { ok: false as const, requestId, error: "Method Not Allowed" },
-    { status: 405, headers: { "x-request-id": requestId } }
+    { status: 405, headers: { "x-request-id": requestId } },
   );
 }
 

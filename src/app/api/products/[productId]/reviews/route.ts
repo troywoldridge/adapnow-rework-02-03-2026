@@ -8,8 +8,7 @@ import { auth } from "@clerk/nextjs/server";
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { productReviews } from "@/lib/db/schema";
-
+import { productReviews, reviewHelpfulVotes } from "@/lib/db/schema";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,19 +18,14 @@ export const revalidate = 0;
  * Product Reviews API
  *
  * GET /api/products/:productId/reviews
- * - Supports cursor pagination for sort=newest|oldest using (createdAt,id) tiebreaker.
- * - Supports page/pageSize for sort=helpful|highest|lowest.
+ * - Cursor pagination for sort=newest|oldest using (createdAt,id) tiebreaker.
+ * - page/pageSize for sort=helpful|highest|lowest (and rating_* aliases).
  * - Includes helpfulCount and votedByMe.
  *
  * POST /api/products/:productId/reviews
- * - Creates a review (Turnstile optional but strongly recommended).
+ * - Creates a review (Turnstile optional but recommended).
  * - Basic rate limiting + duplicate guard.
  * - Auto-approve via REVIEWS_AUTO_APPROVE=true.
- *
- * Future-proofing:
- * - requestId in response + header.
- * - Zod validation for query/body.
- * - Conservative limits to prevent abuse.
  */
 
 const MAX_PAGE_SIZE = 50;
@@ -99,10 +93,32 @@ function toInt(v: unknown, fallback: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, x));
 }
 
-function normalizeSort(raw: string | undefined) {
+type SortMode =
+  | "newest"
+  | "oldest"
+  | "helpful"
+  | "most_helpful"
+  | "highest"
+  | "lowest"
+  | "rating"
+  | "rating_desc"
+  | "rating_asc";
+
+function normalizeSort(raw: string | undefined): SortMode {
   const s = (raw || "newest").toLowerCase();
-  if (s === "newest" || s === "oldest" || s === "helpful" || s === "most_helpful" || s === "highest" || s === "lowest" || s === "rating" || s === "rating_desc" || s === "rating_asc")
+  if (
+    s === "newest" ||
+    s === "oldest" ||
+    s === "helpful" ||
+    s === "most_helpful" ||
+    s === "highest" ||
+    s === "lowest" ||
+    s === "rating" ||
+    s === "rating_desc" ||
+    s === "rating_asc"
+  ) {
     return s;
+  }
   return "newest";
 }
 
@@ -148,7 +164,6 @@ async function verifyTurnstile(opts: {
 }): Promise<{ ok: true } | { ok: false; codes: string[] }> {
   const secret = String(process.env.CLOUDFLARE_TURNSTILE_SECRET || "").trim();
   if (!secret) {
-    // Not configured: allow but warn (you asked for future-proof; this keeps dev easy).
     console.warn("CLOUDFLARE_TURNSTILE_SECRET not set; Turnstile verification skipped.");
     return { ok: true };
   }
@@ -178,14 +193,15 @@ async function verifyTurnstile(opts: {
 
 /* -------------------------------- GET -------------------------------- */
 export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: string }> }) {
-  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {
-    const p = ParamsSchema.safeParse(ctx.params);
+    const params = await ctx.params;
+    const p = ParamsSchema.safeParse(params);
     if (!p.success) {
       return noStoreJson(req, { ok: false as const, requestId, error: "invalid_product_id" }, 400);
     }
+// sourcery skip: use-object-destructuring
     const productId = p.data.productId;
 
     const url = new URL(req.url);
@@ -207,7 +223,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
           error: "invalid_query",
           issues: q.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
         },
-        400
+        400,
       );
     }
 
@@ -250,31 +266,30 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
         const id = cursor.id;
 
         if (sort === "newest") {
-          if (dir === "prev") {
-            whereExpr = and(
-              baseWhere,
-              sql`( ${productReviews.createdAt} > ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} > ${id}) )`
-            );
-          } else {
-            whereExpr = and(
-              baseWhere,
-              sql`( ${productReviews.createdAt} < ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} < ${id}) )`
-            );
-          }
-        } else {
-          // oldest
-          if (dir === "prev") {
-            whereExpr = and(
-              baseWhere,
-              sql`( ${productReviews.createdAt} < ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} < ${id}) )`
-            );
-          } else {
-            whereExpr = and(
-              baseWhere,
-              sql`( ${productReviews.createdAt} > ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} > ${id}) )`
-            );
-          }
-        }
+                  if (dir === "prev") {
+                    whereExpr = and(
+                      baseWhere,
+                      sql`( ${productReviews.createdAt} > ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} > ${id}) )`,
+                    );
+                  } else {
+                    whereExpr = and(
+                      baseWhere,
+                      sql`( ${productReviews.createdAt} < ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} < ${id}) )`,
+                    );
+                  }
+                }
+        else if (dir === "prev") {
+                    whereExpr = and(
+                      baseWhere,
+                      sql`( ${productReviews.createdAt} < ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} < ${id}) )`,
+                    );
+                  }
+        else {
+                    whereExpr = and(
+                      baseWhere,
+                      sql`( ${productReviews.createdAt} > ${t} OR (${productReviews.createdAt} = ${t} AND ${productReviews.id} > ${id}) )`,
+                    );
+                  }
       }
 
       const rows = await db
@@ -297,6 +312,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
       const votedMap: Record<number, boolean> = {};
       if (ids.length) {
         let voterCond: any;
+
         if (userId && fingerprint) {
           voterCond = or(eq(reviewHelpfulVotes.userId, userId), eq(reviewHelpfulVotes.voterFingerprint, fingerprint));
         } else if (userId) {
@@ -310,6 +326,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
             .select({ reviewId: reviewHelpfulVotes.reviewId })
             .from(reviewHelpfulVotes)
             .where(and(inArray(reviewHelpfulVotes.reviewId, ids), eq(reviewHelpfulVotes.isHelpful, true), voterCond));
+
           for (const vr of votedRows) votedMap[vr.reviewId] = true;
         }
       }
@@ -340,11 +357,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
         prevCursor,
         pageSize,
         items,
-        fingerprint, // helps client reuse same fingerprint for vote checks
+        fingerprint,
       });
     }
 
     // Non-cursor sorts: page/pageSize
+    // NOTE: At this point, sort cannot be "newest" or "oldest" (cursorable sorts are handled above).
     let orderExpr: any;
     switch (sort) {
       case "helpful":
@@ -360,10 +378,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
       case "rating_asc":
         orderExpr = asc(productReviews.rating);
         break;
-      case "oldest":
-        orderExpr = asc(productReviews.createdAt);
-        break;
       default:
+        // Should not happen, but keep stable ordering.
         orderExpr = desc(productReviews.createdAt);
         break;
     }
@@ -390,6 +406,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
     const votedMap: Record<number, boolean> = {};
     if (ids.length) {
       let voterCond: any;
+
       if (userId && fingerprint) {
         voterCond = or(eq(reviewHelpfulVotes.userId, userId), eq(reviewHelpfulVotes.voterFingerprint, fingerprint));
       } else if (userId) {
@@ -403,6 +420,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
           .select({ reviewId: reviewHelpfulVotes.reviewId })
           .from(reviewHelpfulVotes)
           .where(and(inArray(reviewHelpfulVotes.reviewId, ids), eq(reviewHelpfulVotes.isHelpful, true), voterCond));
+
         for (const vr of votedRows) votedMap[vr.reviewId] = true;
       }
     }
@@ -437,15 +455,15 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: 
 
 /* -------------------------------- POST -------------------------------- */
 export async function POST(req: NextRequest, ctx: { params: Promise<{ productId: string }> }) {
-  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {
-    const p = ParamsSchema.safeParse(ctx.params);
+    const params = await ctx.params;
+    const p = ParamsSchema.safeParse(params);
     if (!p.success) {
       return noStoreJson(req, { ok: false as const, requestId, error: "invalid_product_id" }, 400);
     }
-    const productId = p.data.productId;
+    const {productId} = p.data;
 
     const ip = getClientIp(req.headers);
     await auth(); // optional for future “verified buyer” enrichment
@@ -462,7 +480,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ productId:
           error: "invalid_input",
           issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
         },
-        400
+        400,
       );
     }
 
@@ -489,7 +507,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ productId:
       return noStoreJson(
         req,
         { ok: false as const, requestId, error: "turnstile_failed", details: ts.codes },
-        403
+        403,
       );
     }
 
@@ -502,8 +520,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ productId:
           and(
             eq(productReviews.productId, productId),
             eq(productReviews.userIp, ip),
-            sql`${productReviews.createdAt} > NOW() - INTERVAL '8 hours'`
-          )
+            sql`${productReviews.createdAt} > NOW() - INTERVAL '8 hours'`,
+          ),
         )) ?? [{ recent: 0 }];
 
     if ((recent ?? 0) > 0) {
@@ -519,8 +537,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ productId:
           and(
             eq(productReviews.productId, productId),
             sql`${productReviews.createdAt} > NOW() - INTERVAL '7 days'`,
-            sql`md5(${productReviews.comment}) = md5(${parsed.data.comment})`
-          )
+            sql`md5(${productReviews.comment}) = md5(${parsed.data.comment})`,
+          ),
         )) ?? [{ dup: 0 }];
 
     if ((dup ?? 0) > 0) {
@@ -563,7 +581,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ productId:
         },
         moderation: approvedFlag ? "approved" : "pending",
       },
-      approvedFlag ? 201 : 202
+      approvedFlag ? 201 : 202,
     );
   } catch (err: any) {
     const message = String(err?.message || err);

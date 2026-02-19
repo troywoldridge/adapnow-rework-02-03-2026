@@ -1,4 +1,3 @@
-// src/app/cart/CartPageClient.tsx
 "use client";
 
 import Link from "next/link";
@@ -97,51 +96,60 @@ function safeUUID(): string {
   return `saved_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+function asMoneyNumber(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function asString(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "";
+}
+
 /**
  * Normalize ANY incoming "shipping-like" object into ShippingRate.
- * CartSummary wants ShippingRate (must include code + name).
+ *
+ * IMPORTANT: Based on your TS compiler errors, ShippingRate does NOT include:
+ * - code
+ * - name
+ * - etaDays
+ *
+ * It DOES include:
+ * - carrier
+ * - serviceCode
+ * - serviceName
+ * - amount
+ * - currency
  */
 function toShippingRate(v: unknown, fallbackCurrency: "USD" | "CAD"): ShippingRate | null {
   if (!v || typeof v !== "object") return null;
   const r = v as Record<string, unknown>;
 
-  if (typeof r.code === "string" && typeof r.name === "string") {
-    return r as ShippingRate;
-  }
-
-  const carrier = String(r.carrier ?? "").trim();
-  const method = String(r.method ?? r.serviceName ?? r.serviceCode ?? "").trim();
+  const carrier = asString(r.carrier).trim();
+  const serviceCode = asString(r.serviceCode ?? r.method).trim();
+  const serviceName = asString(r.serviceName ?? r.methodName ?? r.method ?? r.serviceCode).trim();
 
   const amount =
     typeof r.amount === "number"
       ? r.amount
       : typeof r.cost === "number"
       ? r.cost
-      : Number(r.amount ?? r.cost ?? 0) || 0;
-
-  const etaDays =
-    typeof r.etaDays === "number"
-      ? r.etaDays
-      : typeof r.days === "number"
-      ? r.days
-      : Number.isFinite(Number(r.etaDays ?? r.days))
-      ? Number(r.etaDays ?? r.days)
-      : null;
+      : asMoneyNumber(r.amount ?? r.cost ?? 0);
 
   const currency: "USD" | "CAD" = r.currency === "CAD" ? "CAD" : fallbackCurrency;
 
-  if (!carrier || !method) return null;
+  if (!carrier || !serviceCode || !serviceName) return null;
 
-  const code = `${carrier}:${method}`;
-  const name = `${carrier} ${method}`.trim();
-
+  // Return ONLY known properties for ShippingRate (no extra keys).
   return {
-    code,
-    name,
+    carrier,
+    serviceCode,
+    serviceName,
     amount,
     currency,
-    etaDays,
-  } as ShippingRate;
+  };
 }
 
 /** Prefer artwork thumb if present, else product image. */
@@ -295,7 +303,6 @@ export default function CartPageClient({ initialItems, currency, store, initialS
   }
 
   async function updateQty(lineId: string, qty: number) {
-    // Defensive: guard against NaN / infinities even if handlers are correct
     if (!Number.isFinite(qty)) return;
 
     const nextQty = clampQty(qty);
@@ -316,7 +323,7 @@ export default function CartPageClient({ initialItems, currency, store, initialS
 
       await refreshFromServer();
     } finally {
-      setBusyId(lineId);
+      setBusyId(null);
     }
   }
 
@@ -376,7 +383,7 @@ export default function CartPageClient({ initialItems, currency, store, initialS
         cache: "no-store",
       });
 
-      // ✅ Only treat as success if res.ok (per review)
+      // ✅ Only treat as success if res.ok
       if (!res.ok) {
         setUiError("Couldn’t move that item to your cart. Please try again.");
         return;
@@ -487,7 +494,6 @@ export default function CartPageClient({ initialItems, currency, store, initialS
                             value={it.quantity}
                             disabled={busyId === it.id}
                             onChange={(e) => {
-                              // ✅ Guard against NaN quantity input (per review)
                               const val = Number(e.currentTarget.value);
                               if (Number.isNaN(val) || !Number.isFinite(val)) return;
                               void updateQty(it.id, val);

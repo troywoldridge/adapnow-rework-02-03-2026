@@ -30,5 +30,5 @@ export * from "./product_reviews";
 
 export * from "./quote_requests";
 export * from "./custom_order_requests";
-
+export * from "./reviewHelpfulVotes";
 export * from "./sinaliteProducts";

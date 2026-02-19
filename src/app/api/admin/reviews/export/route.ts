@@ -40,6 +40,7 @@ export const revalidate = 0;
 
 function getRequestId(req: NextRequest): string {
   const existing = req.headers.get("x-request-id");
+
   if (existing && existing.trim()) return existing.trim();
   try {
     return crypto.randomUUID();

@@ -68,6 +68,7 @@ async function ensureSid(): Promise<string> {
 
 async function loadOrderOrNull(orderId: string): Promise<OrderRow | null> {
   const { select } = db;
+// sourcery skip: inline-immediately-returned-variable
   const o =
     ((await select().from(orders).where(eq(orders.id, orderId)).limit(1))?.[0] as OrderRow | undefined) ??
     null;
