@@ -81,9 +81,10 @@ export default function CheckoutPaymentElement({
         <button
           type="button"
           onClick={() => void initializeCheckout()}
-          className="mt-4 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+          disabled={isInitializing}
+          className="mt-4 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          Try again
+          {isInitializing ? 'Retrying…' : 'Try again'}
         </button>
       </div>
     );
