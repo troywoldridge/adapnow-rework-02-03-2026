@@ -112,7 +112,8 @@ function mapShipment(s: any): Shipment {
   };
 }
 
-export async function GET(req: NextRequest, ctx: { params: { providerId: string } }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ providerId: string }> }) {
+  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {

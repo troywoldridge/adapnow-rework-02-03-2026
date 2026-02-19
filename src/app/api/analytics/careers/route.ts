@@ -55,7 +55,7 @@ const BodySchema = z
     event: z.string().trim().min(1).max(64).optional(),
     path: z.string().trim().max(512).optional(),
     ref: z.string().trim().max(512).optional(),
-    meta: z.record(z.unknown()).optional(),
+    meta: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();
 

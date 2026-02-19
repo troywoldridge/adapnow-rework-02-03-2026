@@ -113,8 +113,9 @@ function lineKey(productId: any, quantity: any, optionIds: any) {
  * Reorder should be POST (state-changing).
  * GET is still supported for backward compatibility and redirects users somewhere helpful.
  */
-export async function GET(req: Request, ctx: { params: { id: string } }) {
-  const id = cleanId(ctx?.params?.id);
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
+  const id = cleanId(params?.id);
   if (!id) return redirect("/account?tab=orders", req.url, 302);
 
   // If someone hits the URL directly, we take them to the order page
@@ -122,7 +123,8 @@ export async function GET(req: Request, ctx: { params: { id: string } }) {
   return redirect(`/account/orders/${encodeURIComponent(id)}`, req.url, 302);
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   const orderId = cleanId(params?.id);
   const mode = parseMode(req.url);
 
@@ -243,8 +245,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         if (artForLine.length) {
           const artInserts: CartArtworkInsert[] = artForLine.map((a) => ({
             cartLineId: nl.id,
+            key: String(a.url || randomUUID()),
             url: a.url,
-            side: a.side ?? null,
+            side: Number(a.side ?? 1) || 1,
           }));
           await tx.insert(cartArtwork).values(artInserts);
         }

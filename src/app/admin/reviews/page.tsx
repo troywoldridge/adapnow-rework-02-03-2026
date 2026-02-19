@@ -24,13 +24,13 @@ type EditState = Record<
   }
 >;
 
-async function fetcher(url: string) {
+async function fetcher(url: string): Promise<ReviewRow[]> {
   const res = await fetch(url, { headers: { accept: "application/json" } });
   if (!res.ok) {
     const t = await res.text().catch(() => "");
     throw new Error(t || `Request failed (${res.status})`);
   }
-  return res.json();
+  return (await res.json()) as ReviewRow[];
 }
 
 function clampRating(n: number): number {
@@ -336,7 +336,7 @@ export default function AdminReviewsPage() {
 
                 <div className="min-w-[130px]">
                   <div className="flex flex-col items-center">
-                    <Stars rating={ed?.rating ?? r.rating} />
+                    <Stars value={ed?.rating ?? r.rating} />
                     <input
                       type="number"
                       min={1}

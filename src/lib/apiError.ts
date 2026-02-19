@@ -20,12 +20,25 @@ export class ApiError extends Error {
   code?: string;
   details?: unknown;
 
-  constructor(status: number, message: string, opts?: { code?: string; details?: unknown }) {
-    super(message);
+  constructor(status: number, message: string, opts?: { code?: string; details?: unknown });
+  constructor(input: { status: number; message: string; code?: string; details?: unknown });
+  constructor(
+    a: number | { status: number; message: string; code?: string; details?: unknown },
+    b?: string,
+    c?: { code?: string; details?: unknown },
+  ) {
+    if (typeof a === "number") {
+      super(b || "API Error");
+      this.status = a;
+      this.code = c?.code;
+      this.details = c?.details;
+    } else {
+      super(a.message);
+      this.status = a.status;
+      this.code = a.code;
+      this.details = a.details;
+    }
     this.name = "ApiError";
-    this.status = status;
-    this.code = opts?.code;
-    this.details = opts?.details;
   }
 }
 
@@ -34,9 +47,6 @@ export function getRequestIdFromHeaders(req: Request): string | undefined {
   return v && v.trim() ? v.trim() : undefined;
 }
 
-/**
- * Back-compat alias (some files import getRequestId)
- */
 export function getRequestId(req: Request): string | undefined {
   return getRequestIdFromHeaders(req);
 }
@@ -58,10 +68,14 @@ export function ok<T extends Record<string, any>>(data: T, init?: ResponseInit) 
   return NextResponse.json(body, { status: init?.status ?? 200, headers: init?.headers });
 }
 
-export function fail(error: string, init?: { status?: number; code?: string; requestId?: string; details?: unknown }) {
+export function fail(
+  error: string | unknown,
+  init?: { status?: number; code?: string; requestId?: string; details?: unknown },
+) {
+  const message = typeof error === "string" ? error : error instanceof Error ? error.message : "Request failed";
   const body: ApiFailShape = {
     ok: false,
-    error,
+    error: message,
     code: init?.code,
     requestId: init?.requestId,
     details: init?.details,
@@ -69,9 +83,6 @@ export function fail(error: string, init?: { status?: number; code?: string; req
   return NextResponse.json(body, { status: init?.status ?? 400 });
 }
 
-/**
- * Back-compat: jsonError used by older routes
- */
 export function jsonError(status: number, message: string, meta?: Record<string, unknown>) {
   const body: ApiFailShape = {
     ok: false,
@@ -81,9 +92,6 @@ export function jsonError(status: number, message: string, meta?: Record<string,
   return NextResponse.json(body, { status });
 }
 
-/**
- * Back-compat: apiError (older code may import this)
- */
 export function apiError(status: number, message: string, meta?: Record<string, unknown>) {
   return jsonError(status, message, meta);
 }

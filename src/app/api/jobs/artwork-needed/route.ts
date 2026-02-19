@@ -31,7 +31,7 @@ function toFiniteNumber(v: unknown): number | null {
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getRequestIdFromHeaders(req.headers);
+  const requestId = getRequestIdFromHeaders(req) || `rid_${Date.now()}`;
   const log = withRequestId(requestId);
 
   const POLICY = "cron" as const;

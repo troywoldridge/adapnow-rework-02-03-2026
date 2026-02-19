@@ -111,20 +111,18 @@ export async function GET(req: NextRequest) {
     // Build query
     // NOTE: if you want approved filter, we can add `.where(eq(productReviews.approved, true))`
     // only when the query param is provided.
-    let reviewsQuery = db.select().from(productReviews).orderBy(desc(productReviews.createdAt)).limit(limit);
-
+    let reviews;
     if (approvedFilter !== null) {
-      // dynamic import to avoid extra drizzle operators at top if your lint is strict
       const { eq } = await import("drizzle-orm");
-      reviewsQuery = db
+      reviews = await db
         .select()
         .from(productReviews)
         .where(eq(productReviews.approved, approvedFilter))
         .orderBy(desc(productReviews.createdAt))
         .limit(limit);
+    } else {
+      reviews = await db.select().from(productReviews).orderBy(desc(productReviews.createdAt)).limit(limit);
     }
-
-    const reviews = await reviewsQuery;
 
     const stamp = Date.now();
     const base = filenameSafe(`reviews-export-${stamp}`);

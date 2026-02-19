@@ -599,7 +599,8 @@ function drawAddressBox(
 }
 
 /* ------------------------------ route ------------------------------ */
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+export async function GET(_req: Request, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   const orderId = cleanId(params?.id);
   if (!orderId) return NextResponse.json({ ok: false, error: "Missing order id" }, { status: 400 });
 

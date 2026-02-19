@@ -94,7 +94,8 @@ async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
   }
 }
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+export async function GET(_req: Request, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   try {
     const database = db;
     const { userId } = await auth();

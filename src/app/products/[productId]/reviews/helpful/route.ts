@@ -41,7 +41,8 @@ function coerceProductId(paramsProductId: string): number | null {
  * - If is_helpful column does not exist, falls back to total counts as helpful.
  * - Tries to filter product_reviews.approved = true; if the column doesn't exist, falls back.
  */
-export async function GET(_req: NextRequest, { params }: { params: { productId: string } }) {
+export async function GET(_req: NextRequest, context: { params: Promise<{ productId: string }> }) {
+  const params = await context.params;
   const productIdNum = coerceProductId(params.productId);
   if (productIdNum == null) {
     return json({ error: "Invalid productId" }, { status: 422 });

@@ -1,9 +1,11 @@
-// src/lib/sinalite.client.ts
-// Compatibility shim for legacy imports.
-//
-// Canonical Sinalite client implementation lives at:
-//   src/lib/sinalite/sinalite.client.ts
-//
-// This file exists so imports like "@/lib/sinalite.client" continue to work.
+import "server-only";
 
-export { getSinalitePriceRegular } from "@/lib/sinalite/sinalite.client";
+export {
+  getSinalitePriceRegular,
+  getSinaliteProductMeta,
+  getSinaliteProductArrays,
+  normalizeOptionGroups,
+  getDefaultPriceSnapshot,
+  getConfiguredPrice,
+  estimateShipping,
+} from "@/lib/sinalite/sinalite.client";

@@ -1,46 +1,34 @@
-// src/lib/db/schema/index.ts
-// CLEAN canonical Drizzle export surface (no ambiguous re-exports)
-
 export * from "./types";
 export * from "./enums";
 
-/* ---------------- Core ---------------- */
 export * from "./addresses";
 
-/* ---------------- Cart ---------------- */
-export * from "./cart";            // carts
-export * from "./cartLines";       // cartLines
-export * from "./cartCredits";     // cartCredits
-export * from "./cartAttachments"; // cartAttachments
-export * from "./cart_artwork";    // cartArtwork
+export * from "./cart";
+export * from "./cartLines";
+export * from "./cartCredits";
+export * from "./cartAttachments";
+export * from "./cart_artwork";
 
-/* ---------------- Artwork ---------------- */
-export * from "./artwork_uploads"; // artworkUploads
-export * from "./artwork_staged";  // artworkStaged shim
+export * from "./artwork_uploads";
+export * from "./artwork_staged";
 
-/* ---------------- Customer ---------------- */
 export * from "./customer";
 export * from "./customerAddresses";
 
-/* ---------------- Orders ---------------- */
 export * from "./orders";
 export * from "./orderItems";
 export * from "./orderSessions";
 
-/* ---------------- Loyalty ---------------- */
 export * from "./loyalty_wallets";
-export * from "./loyalty_transactions"; // now safe: no loyaltyReason export inside this module
+export * from "./loyalty_transactions";
 
-/* ---------------- Marketing ---------------- */
 export * from "./heroEvents";
+export * from "./guideDownloadEvents";
 
-/* ---------------- Pricing + Reviews ---------------- */
 export * from "./price_tiers";
 export * from "./product_reviews";
 
-/* ---------------- Leads ---------------- */
 export * from "./quote_requests";
 export * from "./custom_order_requests";
 
-/* ---------------- Sinalite ---------------- */
 export * from "./sinaliteProducts";

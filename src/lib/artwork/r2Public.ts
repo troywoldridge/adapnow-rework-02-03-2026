@@ -1,7 +1,3 @@
-// src/lib/artwork/r2Public.ts
-// Public URL helpers (diagnostic only). For customer artwork, do NOT expose public URLs.
-// Customer artwork should be private: store R2 keys and use signed GET URLs from server.
-
 function readFirst(keys: string[]): string {
   for (const k of keys) {
     const v = (process.env as Record<string, string | undefined>)[k];
@@ -24,8 +20,7 @@ export function getR2PublicBaseUrl(): string {
 export function getR2PublicHost(): string | null {
   if (!BASE) return null;
   try {
-    const u = new URL(BASE);
-    return u.hostname.toLowerCase();
+    return new URL(BASE).hostname.toLowerCase();
   } catch {
     return null;
   }
@@ -35,4 +30,11 @@ export function r2PublicUrlForKey(key: string): string {
   if (!BASE) return "";
   const k = String(key ?? "").replace(/^\/+/, "");
   return `${BASE}/${k}`;
+}
+
+export function r2PublicUrl(input: string): string {
+  const value = String(input ?? "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return r2PublicUrlForKey(value);
 }

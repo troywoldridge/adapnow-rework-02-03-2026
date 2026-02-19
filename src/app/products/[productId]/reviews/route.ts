@@ -48,7 +48,8 @@ function coerceProductId(paramsProductId: string): number | null {
 }
 
 // GET: Fetch approved reviews for a product with sort & pagination
-export async function GET(req: NextRequest, { params }: { params: { productId: string } }) {
+export async function GET(req: NextRequest, context: { params: Promise<{ productId: string }> }) {
+  const params = await context.params;
   const productIdNum = coerceProductId(params.productId);
   if (productIdNum == null) {
     return json({ error: "Invalid productId" }, { status: 422 });

@@ -220,7 +220,8 @@ function buildEmailHtml(opts: {
  * POST /account/orders/[id]/invoice/email
  * Sends an invoice email to the authenticated user (preferred) or to an on-file order email if available.
  */
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   const orderId = cleanId(params?.id);
   if (!orderId) return jsonNoStore({ ok: false, error: "Missing order id" }, { status: 400 });
 

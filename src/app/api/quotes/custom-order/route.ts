@@ -253,7 +253,7 @@ function internalHtml(args: Record<string, string>) {
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getRequestIdFromHeaders(req.headers);
+  const requestId = getRequestIdFromHeaders(req) || `rid_${Date.now()}`;
   const log = withRequestId(requestId);
 
   const POLICY = "public" as const;

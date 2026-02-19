@@ -20,7 +20,8 @@ function jsonError(status: number, message: string, extra?: Record<string, unkno
  * POST /api/me/addresses/[id]/default
  * Sets the given address (must belong to the authed user) as the default address.
  */
-export async function POST(_req: Request, ctx: { params: { id: string } }) {
+export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   try {
     const { userId } = await auth();
     if (!userId) return jsonError(401, "unauthorized");

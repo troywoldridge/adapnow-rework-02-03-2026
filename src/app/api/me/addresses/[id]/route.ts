@@ -87,7 +87,8 @@ function sanitizePatch(body: any): AddressPatch {
  * GET /api/me/addresses/[id]
  * Returns a single address (must belong to the authed user).
  */
-export async function GET(_req: NextRequest, ctx: { params: { id: string } }) {
+export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   try {
     const { userId } = await auth();
     if (!userId) return jsonError(401, "unauthorized");
@@ -115,7 +116,8 @@ export async function GET(_req: NextRequest, ctx: { params: { id: string } }) {
  * Updates a single address (must belong to the authed user).
  * If isDefault=true, it will clear other defaults first (transaction).
  */
-export async function PATCH(req: NextRequest, ctx: { params: { id: string } }) {
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   try {
     const { userId } = await auth();
     if (!userId) return jsonError(401, "unauthorized");
@@ -190,7 +192,8 @@ export async function PATCH(req: NextRequest, ctx: { params: { id: string } }) {
  * Deletes a single address (must belong to the authed user).
  * If the deleted address was default, this does NOT auto-pick a new default (UI can choose).
  */
-export async function DELETE(_req: NextRequest, ctx: { params: { id: string } }) {
+export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   try {
     const { userId } = await auth();
     if (!userId) return jsonError(401, "unauthorized");

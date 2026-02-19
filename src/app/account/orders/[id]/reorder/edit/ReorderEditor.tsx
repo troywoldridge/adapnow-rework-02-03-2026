@@ -66,7 +66,7 @@ export default function ReorderEditor(props: {
 
   const locale = currencyLocale(props.currency);
 
-  const onQtyChange = (idx: number, next: number) => {
+  const onQtyChange = (idx: number, next: unknown) => {
     const q = clampInt(next, 0, 1_000_000);
     setRows((prev) => prev.map((x, i) => (i === idx ? { ...x, quantity: q } : x)));
   };
