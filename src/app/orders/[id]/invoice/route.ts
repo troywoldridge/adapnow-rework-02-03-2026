@@ -351,9 +351,8 @@ async function buildInvoicePdf(orderId: string): Promise<{ buf: Buffer; headers:
 /* -------------------------------------------------------------------------- */
 /* Route handlers                                                              */
 /* -------------------------------------------------------------------------- */
-type Params = { params: { id: string } };
-
-export async function GET(_req: NextRequest, { params }: Params) {
+export async function GET(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   const orderId = `${params?.id || ""}`.trim();
   if (!orderId) {
     return NextResponse.json({ error: "Missing order id." }, { status: 400, headers: { "Cache-Control": "no-store" } });
@@ -374,7 +373,8 @@ export async function GET(_req: NextRequest, { params }: Params) {
   });
 }
 
-export async function HEAD(_req: NextRequest, { params }: Params) {
+export async function HEAD(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   const orderId = `${params?.id || ""}`.trim();
   if (!orderId) return new NextResponse(null, { status: 400, headers: { "Cache-Control": "no-store" } });
 

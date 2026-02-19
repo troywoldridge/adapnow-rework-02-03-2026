@@ -134,7 +134,8 @@ function extractCurrency(x: unknown): "USD" | "CAD" {
   return "USD";
 }
 
-export async function POST(req: NextRequest, ctx: { params: { productId: string } }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ productId: string }> }) {
+  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {

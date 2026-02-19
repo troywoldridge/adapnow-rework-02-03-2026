@@ -70,7 +70,8 @@ function toBool(v: string | undefined): boolean {
   return s === "1" || s === "true" || s === "yes";
 }
 
-export async function GET(req: NextRequest, ctx: { params: { productId: string } }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: string }> }) {
+  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {

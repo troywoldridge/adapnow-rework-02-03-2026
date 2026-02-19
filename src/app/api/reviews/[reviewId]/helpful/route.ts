@@ -72,7 +72,8 @@ function normalizeFingerprint(v: unknown): string {
   return s ? s.slice(0, 64) : "";
 }
 
-export async function POST(req: NextRequest, ctx: { params: { reviewId: string } }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ reviewId: string }> }) {
+  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {

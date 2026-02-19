@@ -93,7 +93,8 @@ function toBool(v: unknown): boolean {
   return Boolean(v);
 }
 
-export async function GET(req: NextRequest, ctx: { params: { productId: string } }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ productId: string }> }) {
+  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {
@@ -182,7 +183,8 @@ export async function GET(req: NextRequest, ctx: { params: { productId: string }
   }
 }
 
-export async function POST(req: NextRequest, ctx: { params: { productId: string } }) {
+export async function POST(req: NextRequest, ctx: { params: Promise<{ productId: string }> }) {
+  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {
