@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getAddressById, updateAddress, deleteAddress } from "@/lib/addresses";
 import { requireValidAddress } from "@/lib/addressValidation";
+import { ApiError } from "@/lib/apiError";
 import { enforcePolicy } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -18,7 +19,7 @@ function noStoreJson(body: unknown, status = 200) {
 
 async function requireUserId(req: NextRequest): Promise<string> {
   const auth = await enforcePolicy(req, "auth");
-  if (!auth.userId) throw new Error("Unauthorized");
+  if (!auth.userId) throw new ApiError(401, "Unauthorized");
   return auth.userId;
 }
 
@@ -28,8 +29,11 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     const { id } = await ctx.params;
     const row = await getAddressById(String(id || ""), userId);
     return row ? noStoreJson({ ok: true, address: row }) : noStoreJson({ ok: false, error: "Address not found" }, 404);
-  } catch {
-    return noStoreJson({ ok: false, error: "Unauthorized" }, 401);
+  } catch (error: unknown) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      return noStoreJson({ ok: false, error: "Unauthorized" }, 401);
+    }
+    return noStoreJson({ ok: false, error: "Failed to load address" }, 500);
   }
 }
 
@@ -84,8 +88,17 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return updated
       ? noStoreJson({ ok: true, address: updated })
       : noStoreJson({ ok: false, error: "Address not found" }, 404);
-  } catch {
-    return noStoreJson({ ok: false, error: "Failed to update address" }, 400);
+  } catch (error: unknown) {
+    if (error instanceof ApiError) {
+      if (error.status === 401 || error.status === 403) {
+        return noStoreJson({ ok: false, error: "Unauthorized" }, 401);
+      }
+      if (error.status === 422) {
+        return noStoreJson({ ok: false, error: error.message, details: error.details }, 422);
+      }
+      return noStoreJson({ ok: false, error: error.message }, error.status);
+    }
+    return noStoreJson({ ok: false, error: "Failed to update address" }, 500);
   }
 }
 
@@ -95,7 +108,10 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
     const { id } = await ctx.params;
     await deleteAddress(String(id || ""), userId);
     return noStoreJson({ ok: true });
-  } catch {
-    return noStoreJson({ ok: false, error: "Failed to delete address" }, 400);
+  } catch (error: unknown) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      return noStoreJson({ ok: false, error: "Unauthorized" }, 401);
+    }
+    return noStoreJson({ ok: false, error: "Failed to delete address" }, 500);
   }
 }

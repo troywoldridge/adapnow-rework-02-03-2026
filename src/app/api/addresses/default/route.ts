@@ -3,6 +3,7 @@ import "server-only";
 import { NextRequest, NextResponse } from "next/server";
 
 import { setDefaultAddress } from "@/lib/addresses";
+import { ApiError } from "@/lib/apiError";
 import { enforcePolicy } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -31,7 +32,13 @@ export async function PUT(req: NextRequest) {
 
     await setDefaultAddress(kind, id, auth.userId);
     return noStoreJson({ ok: true });
-  } catch {
-    return noStoreJson({ ok: false, error: "Failed to set default address" }, 400);
+  } catch (error: unknown) {
+    if (error instanceof ApiError) {
+      if (error.status === 401 || error.status === 403) {
+        return noStoreJson({ ok: false, error: "Unauthorized" }, 401);
+      }
+      return noStoreJson({ ok: false, error: error.message }, error.status);
+    }
+    return noStoreJson({ ok: false, error: "Failed to set default address" }, 500);
   }
 }

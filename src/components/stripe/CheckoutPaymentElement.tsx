@@ -3,14 +3,13 @@
 import { useState } from "react";
 
 export type CheckoutPaymentElementProps = {
-  clientSecret: string;
+  clientSecret?: string;
   returnPath?: string;
   submitLabel?: string;
   className?: string;
 };
 
 export default function CheckoutPaymentElement({
-  clientSecret,
   returnPath = "/checkout/complete",
   submitLabel = "Continue",
   className = "",
@@ -36,10 +35,6 @@ export default function CheckoutPaymentElement({
       setLoading(false);
     }
   };
-
-  if (!clientSecret) {
-    return <div className="checkout-pay__status">Preparing secure payment…</div>;
-  }
 
   return (
     <div className={`checkout-pay__wrap ${className}`.trim()}>

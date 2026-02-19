@@ -1,5 +1,8 @@
+import algoliasearch from "algoliasearch/lite";
+import type { SearchClient } from "algoliasearch/lite";
+
 export type AlgoliaClientResult =
-  | { client: { appId: string; searchKey: string }; indexName: string }
+  | { client: SearchClient; indexName: string }
   | { client: null; indexName: "" };
 
 function readEnv(key: string): string {
@@ -16,5 +19,5 @@ export function getAlgoliaClient(): AlgoliaClientResult {
     return { client: null, indexName: "" };
   }
 
-  return { client: { appId, searchKey }, indexName };
+  return { client: algoliasearch(appId, searchKey), indexName };
 }
