@@ -84,5 +84,5 @@ Detected as `href="..."` paths without corresponding `src/app/**/page.tsx`:
 
 ## Notes
 
-- Third-party package missing modules (e.g. `stripe`, `swr`, `fuse.js`, AWS SDK, etc.) are intentionally excluded from this file because this audit is only for missing **repo-local files/routes/pages**.
+- Missing modules from third-party packages (e.g. `stripe`, `swr`, `fuse.js`, AWS SDK, etc.) are intentionally excluded from this file because this audit is only for missing **repo-local files/routes/pages**.
 - Some component findings are alias-path mismatches rather than fully absent code (files exist under nested folders but imports target old root-level paths).
