@@ -3,7 +3,6 @@
 import { useState } from "react";
 
 export type CheckoutPaymentElementProps = {
-  clientSecret?: string;
   returnPath?: string;
   submitLabel?: string;
   className?: string;

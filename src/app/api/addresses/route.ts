@@ -1,22 +1,16 @@
 import "server-only";
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 import { listAddresses, createAddress } from "@/lib/addresses";
 import { requireValidAddress } from "@/lib/addressValidation";
 import { ApiError } from "@/lib/apiError";
 import { enforcePolicy } from "@/lib/auth";
+import { handleAddressApiError, noStoreJson } from "@/app/api/addresses/response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-function noStoreJson(body: unknown, status = 200) {
-  return NextResponse.json(body, {
-    status,
-    headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
-  });
-}
 
 async function userIdFor(req: NextRequest): Promise<string | null> {
   try {
@@ -71,15 +65,7 @@ export async function POST(req: NextRequest) {
     const created = await createAddress({ customerId: userId, ...(body as any) });
     return noStoreJson({ ok: true, address: created }, 201);
   } catch (error: unknown) {
-    if (error instanceof ApiError) {
-      if (error.status === 401 || error.status === 403) {
-        return noStoreJson({ ok: false, error: "Unauthorized" }, 401);
-      }
-      if (error.status === 422) {
-        return noStoreJson({ ok: false, error: error.message, details: error.details }, 422);
-      }
-      return noStoreJson({ ok: false, error: error.message }, error.status);
-    }
-    return noStoreJson({ ok: false, error: "Failed to create address" }, 500);
+    const { body, status } = handleAddressApiError(error, "Failed to create address");
+    return noStoreJson(body, status);
   }
 }
