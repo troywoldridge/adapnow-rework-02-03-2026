@@ -1,7 +1,7 @@
 import "server-only";
 
 import Link from "next/link";
-import { headers, cookies } from "next/headers";
+import { cookies } from "next/headers";
 import { and, eq, ne } from "drizzle-orm";
 
 import CheckoutPaymentElement from "@/components/CheckoutPaymentElement"; // client component
@@ -15,15 +15,6 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 type Currency = "USD" | "CAD";
-
-/* -------------------------- Helpers -------------------------- */
-
-function originFromHeaders(h: Headers) {
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
-  const isLocal = host.startsWith("localhost") || host.startsWith("127.0.0.1");
-  const proto = h.get("x-forwarded-proto") ?? (isLocal ? "http" : "https");
-  return `${proto}://${host}`;
-}
 
 function moneyFmt(amount: number, currency: Currency) {
   try {
@@ -96,38 +87,7 @@ async function loadCartSummary() {
 
 /* ---------------------------- Page --------------------------- */
 export default async function CheckoutPage() {
-  const h = await headers();
-  const origin = originFromHeaders(h);
-
-  // forward cookies so the API uses the same session/SID
-  const jar = cookies();
-  const cookieHeader = jar
-    .getAll()
-    .map((c) => `${c.name}=${c.value}`)
-    .join("; ");
-
   const summary = await loadCartSummary();
-
-  // ask your API to create a PaymentIntent and return client_secret
-  const res = await fetch(`${origin}/api/create-payment-intent`, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      ...(cookieHeader ? { cookie: cookieHeader } : {}),
-    },
-    cache: "no-store",
-    next: { revalidate: 0 },
-  });
-
-  let clientSecret = "";
-  if (res.ok) {
-    try {
-      const data = await res.json();
-      clientSecret = data?.clientSecret || "";
-    } catch {
-      // ignore
-    }
-  }
 
   const hasPk = Boolean(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 
@@ -161,12 +121,8 @@ export default async function CheckoutPage() {
             <code className="font-mono">NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY</code>. Set it in your
             environment and reload.
           </div>
-        ) : !clientSecret ? (
-          <div className="w-full rounded-xl border bg-white p-6 text-sm text-red-600">
-            We couldn’t start checkout. Please review your cart and try again.
-          </div>
         ) : (
-          <CheckoutPaymentElement clientSecret={clientSecret} />
+          <CheckoutPaymentElement />
         )}
 
         <Link
