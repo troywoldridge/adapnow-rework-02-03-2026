@@ -6,6 +6,7 @@ import { getAddressById, updateAddress, deleteAddress } from "@/lib/addresses";
 import { requireValidAddress } from "@/lib/addressValidation";
 import { ApiError } from "@/lib/apiError";
 import { enforcePolicy } from "@/lib/auth";
+import { handleAddressApiError } from "../errorHandling";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -89,16 +90,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       ? noStoreJson({ ok: true, address: updated })
       : noStoreJson({ ok: false, error: "Address not found" }, 404);
   } catch (error: unknown) {
-    if (error instanceof ApiError) {
-      if (error.status === 401 || error.status === 403) {
-        return noStoreJson({ ok: false, error: "Unauthorized" }, 401);
-      }
-      if (error.status === 422) {
-        return noStoreJson({ ok: false, error: error.message, details: error.details }, 422);
-      }
-      return noStoreJson({ ok: false, error: error.message }, error.status);
-    }
-    return noStoreJson({ ok: false, error: "Failed to update address" }, 500);
+    const response = handleAddressApiError(error, "Failed to update address");
+    return noStoreJson(response.body, response.status);
   }
 }
 
