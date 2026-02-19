@@ -53,3 +53,6 @@ tsconfig.tsbuildinfo
 
 # TypeScript build info
 tsconfig.ci.tsbuildinfo
+
+# Local tooling / nested repos
+/gitflow/
