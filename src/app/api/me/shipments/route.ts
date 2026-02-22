@@ -1,6 +1,6 @@
-// src/app/api/me/shipments/route.ts
 import "server-only";
 
+import crypto from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { auth } from "@clerk/nextjs/server";
@@ -10,6 +10,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { orders } from "@/lib/db/schema/orders";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -21,6 +22,19 @@ type Shipment = {
   events?: { time: string; description: string; location?: string }[];
 };
 
+function noStoreJson(req: NextRequest, body: any, status = 200) {
+  const requestId = body?.requestId || getRequestId(req);
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "x-request-id": requestId,
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      Pragma: "no-cache",
+      Expires: "0",
+    },
+  });
+}
+
 function getRequestId(req: NextRequest): string {
   const existing = req.headers.get("x-request-id");
   if (existing && existing.trim()) return existing.trim();
@@ -31,9 +45,11 @@ function getRequestId(req: NextRequest): string {
   }
 }
 
-const QuerySchema = z.object({
-  orderId: z.string().trim().min(1),
-});
+const QuerySchema = z
+  .object({
+    orderId: z.string().trim().min(1),
+  })
+  .strict();
 
 function mapShipment(s: any): Shipment {
   const carrier = String(s?.carrier ?? s?.provider ?? "Unknown");
@@ -56,9 +72,15 @@ function mapShipment(s: any): Shipment {
   return { carrier, trackingNumber, status, eta, events };
 }
 
-function getSessionIdFromCookies(): string | null {
-  const jar = cookies();
-  return jar.get("adap_sid")?.value ?? jar.get("sid")?.value ?? null;
+// Next 14 (sync) + Next 15 (async) compatible cookies()
+async function getJar() {
+  const maybe = cookies() as any;
+  return typeof maybe?.then === "function" ? await maybe : maybe;
+}
+
+async function getSessionIdFromCookies(): Promise<string | null> {
+  const jar = await getJar();
+  return jar.get?.("adap_sid")?.value ?? jar.get?.("sid")?.value ?? null;
 }
 
 function originFromReq(req: NextRequest): string {
@@ -91,7 +113,8 @@ export async function GET(req: NextRequest) {
     });
 
     if (!parsed.success) {
-      return NextResponse.json(
+      return noStoreJson(
+        req,
         {
           ok: false as const,
           requestId,
@@ -101,27 +124,22 @@ export async function GET(req: NextRequest) {
             message: i.message,
           })),
         },
-        { status: 400, headers: { "x-request-id": requestId } }
+        400
       );
     }
 
     const orderId = parsed.data.orderId;
 
     const { userId } = await auth();
-    const sid = getSessionIdFromCookies();
+    const sid = await getSessionIdFromCookies();
 
-    const [o] =
-      (await db.select().from(orders).where(eq(orders.id, orderId)).limit(1)) ?? [];
+    const [o] = (await db.select().from(orders).where(eq(orders.id, orderId)).limit(1)) ?? [];
 
     if (!o) {
-      return NextResponse.json(
-        { ok: true as const, requestId, shipments: [] as Shipment[] },
-        { status: 200, headers: { "x-request-id": requestId } }
-      );
+      return noStoreJson(req, { ok: true as const, requestId, shipments: [] as Shipment[] }, 200);
     }
 
     // Claim guest → user if the order is currently tied to the guest session id.
-    // (This preserves your old behavior but is safer/cleaner about responses.)
     const oUserId = (o as any)?.userId ?? null;
     if (userId && sid && oUserId === sid) {
       await db.update(orders).set({ userId }).where(eq(orders.id, orderId));
@@ -132,16 +150,12 @@ export async function GET(req: NextRequest) {
     const allowedOwners = [userId, sid].filter((x): x is string => Boolean(x && x.trim()));
     const finalOwner = String((o as any)?.userId ?? "");
     if (!allowedOwners.includes(finalOwner)) {
-      return NextResponse.json(
-        { ok: false as const, requestId, error: "forbidden" },
-        { status: 403, headers: { "x-request-id": requestId } }
-      );
+      return noStoreJson(req, { ok: false as const, requestId, error: "forbidden" }, 403);
     }
 
     const shipments: Shipment[] = [];
 
-    // Optional: if you later add a shipments JSON column, this route will automatically use it.
-    // We intentionally "duck type" to stay compatible across schema changes.
+    // Optional embedded shipment JSON (duck-typed for forward compatibility)
     const embedded =
       (o as any)?.shipments ??
       (o as any)?.shipmentsJson ??
@@ -153,19 +167,20 @@ export async function GET(req: NextRequest) {
     } else if ((o as any)?.provider === "sinalite" && (o as any)?.providerId) {
       const providerId = String((o as any).providerId);
 
-      // Prefer INTERNAL_API_BASE (supports server-to-server), fallback to same-origin.
+      // Prefer INTERNAL_API_BASE (server-to-server), fallback to same-origin.
       const base =
         (process.env.INTERNAL_API_BASE && process.env.INTERNAL_API_BASE.trim()) ||
         originFromReq(req);
 
       if (!base) {
-        return NextResponse.json(
+        return noStoreJson(
+          req,
           {
             ok: false as const,
             requestId,
-            error: "Missing INTERNAL_API_BASE and could not infer request origin",
+            error: "missing_internal_api_base",
           },
-          { status: 500, headers: { "x-request-id": requestId } }
+          500
         );
       }
 
@@ -176,7 +191,6 @@ export async function GET(req: NextRequest) {
       const upstream = await fetch(upstreamUrl, {
         cache: "no-store",
         headers: {
-          // Forward auth/cookies if present (useful when INTERNAL_API_BASE points back to same app).
           ...(req.headers.get("authorization")
             ? { Authorization: req.headers.get("authorization") as string }
             : {}),
@@ -186,15 +200,16 @@ export async function GET(req: NextRequest) {
       });
 
       if (!upstream.ok) {
-        return NextResponse.json(
+        // Keep 200 for UI resilience; caller can show "no tracking yet"
+        return noStoreJson(
+          req,
           {
             ok: false as const,
             requestId,
             error: `failed_to_fetch_shipments:${upstream.status}`,
             shipments: [] as Shipment[],
           },
-          // Keep as 200 if you want UI to be resilient; switch to 502 if you want strict semantics.
-          { status: 200, headers: { "x-request-id": requestId } }
+          200
         );
       }
 
@@ -209,15 +224,13 @@ export async function GET(req: NextRequest) {
       shipments.push(...rawShipments.map(mapShipment));
     }
 
-    return NextResponse.json(
-      { ok: true as const, requestId, shipments },
-      { status: 200, headers: { "x-request-id": requestId } }
-    );
+    return noStoreJson(req, { ok: true as const, requestId, shipments }, 200);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json(
+    return noStoreJson(
+      req,
       { ok: false as const, requestId, error: message || "shipments_failed" },
-      { status: 500, headers: { "x-request-id": requestId } }
+      500
     );
   }
 }

@@ -101,7 +101,6 @@ export default async function UploadArtworkPage({
       <ArtworkUploadBoxes
         lineId={lineId}
         sides={sides}
-        focusSide={focusSide ?? undefined}
       />
     </main>
   );

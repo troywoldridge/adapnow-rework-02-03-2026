@@ -1,9 +1,9 @@
 import "server-only";
 
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { scanAndSendArtworkNeededEmails } from "@/lib/artwork/artworkNeeded";
-import { ApiError, ok, fail, getRequestIdFromHeaders, readJson } from "@/lib/apiError";
+import { ApiError, fail, getRequestIdFromHeaders, readJson } from "@/lib/apiError";
 import { withRequestId } from "@/lib/logger";
 import { enforcePolicy, logAuthzDenial } from "@/lib/auth";
 
@@ -30,6 +30,16 @@ function toFiniteNumber(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function jsonOk(body: unknown, requestId: string, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "x-request-id": requestId,
+      ...noStoreHeaders(),
+    },
+  });
+}
+
 export async function POST(req: NextRequest) {
   const requestId = getRequestIdFromHeaders(req) || `rid_${Date.now()}`;
   const log = withRequestId(requestId);
@@ -52,7 +62,21 @@ export async function POST(req: NextRequest) {
 
     const result = await scanAndSendArtworkNeededEmails(args);
 
-    const res = ok(result, { requestId: ctx.requestId });
+    // ✅ Avoid TS2783: strip any 'ok' (and requestId) field from result before building envelope
+    const { ok: _ignoredOk, requestId: _ignoredRid, ...rest } = (result as any) ?? {};
+
+    const rid = ctx.requestId || requestId;
+
+    const res = jsonOk(
+      {
+        ...rest,
+        ok: true as const,
+        requestId: rid,
+      },
+      rid,
+      200
+    );
+
     return withNoStore(res);
   } catch (e: unknown) {
     // Only log authz denials as authz
@@ -68,7 +92,17 @@ export async function POST(req: NextRequest) {
     const message = e instanceof Error ? e.message : "Failed to run artwork-needed job";
     log.error("Artwork-needed job failed", { message, requestId });
 
-    const res = fail(e, { requestId });
+    // Keep your existing fail() envelope, but ensure request id header exists
+    const res = fail(e, { headers: { "x-request-id": requestId } } as any);
     return withNoStore(res);
   }
+}
+
+export async function GET(req: NextRequest) {
+  const requestId = getRequestIdFromHeaders(req) || `rid_${Date.now()}`;
+  const res = NextResponse.json(
+    { ok: false as const, requestId, error: "Method Not Allowed. Use POST." },
+    { status: 405, headers: { "x-request-id": requestId, ...noStoreHeaders() } }
+  );
+  return withNoStore(res);
 }

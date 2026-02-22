@@ -437,7 +437,7 @@ export default function QuotesClient() {
           (data && typeof data === "object" && "error" in (data as any) && String((data as any).error)) ||
           (typeof data === "string" ? data : "") ||
           `HTTP ${res.status}`;
-        throw new Error(msg);
+        throw new Error(String(msg));
       }
 
       // Success (API)
@@ -501,7 +501,7 @@ export default function QuotesClient() {
           (data && typeof data === "object" && "error" in (data as any) && String((data as any).error)) ||
           (typeof data === "string" ? data : "") ||
           `HTTP ${res.status}`;
-        throw new Error(msg);
+        throw new Error(String(msg));
       }
 
       try {

@@ -1,3 +1,4 @@
+// src/app/api/quotes/custom-order/route.ts
 import "server-only";
 
 import { NextRequest } from "next/server";
@@ -20,9 +21,11 @@ export const revalidate = 0;
 
 declare global {
   // eslint-disable-next-line no-var
+  // sourcery skip: avoid-using-var
   var __adapPgPool: Pool | undefined;
 
   // eslint-disable-next-line no-var
+
   var __adapRate: Map<string, { count: number; resetAt: number }> | undefined;
 }
 
@@ -38,6 +41,12 @@ function withNoStore(res: Response) {
   const hs = noStoreHeaders();
   for (const [k, v] of Object.entries(hs)) (res as any).headers?.set?.(k, v);
   return res;
+}
+
+function withRid(init: ResponseInit | undefined, requestId: string): ResponseInit {
+  const headers = new Headers((init as any)?.headers);
+  headers.set("x-request-id", requestId);
+  return { ...(init || {}), headers };
 }
 
 function getPool(): Pool {
@@ -194,7 +203,9 @@ function customerHtml(args: {
           args.instructions
             ? `<div style="margin-top:12px;">
                  <div style="font-size:12px; color:#64748b; margin-bottom:4px;">Instructions</div>
-                 <div style="border:1px solid #eef0f6; border-radius:12px; padding:12px 14px; color:#0f172a; white-space:pre-wrap;">${htmlEscape(args.instructions)}</div>
+                 <div style="border:1px solid #eef0f6; border-radius:12px; padding:12px 14px; color:#0f172a; white-space:pre-wrap;">${htmlEscape(
+                   args.instructions
+                 )}</div>
                </div>`
             : ""
         }
@@ -231,9 +242,13 @@ function internalHtml(args: Record<string, string>) {
     .map(
       ([k, v]) => `
       <tr>
-        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#64748b; font-size:12px; width:180px;">${htmlEscape(k)}</td>
-        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#0f172a; font-size:13px;">${htmlEscape(v)}</td>
-      </tr>`,
+        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#64748b; font-size:12px; width:180px;">${htmlEscape(
+          k
+        )}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#0f172a; font-size:13px;">${htmlEscape(
+          v
+        )}</td>
+      </tr>`
     )
     .join("");
 
@@ -253,7 +268,7 @@ function internalHtml(args: Record<string, string>) {
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getRequestIdFromHeaders(req) || `rid_${Date.now()}`;
+  const requestId = s(getRequestIdFromHeaders(req), 120) || `rid_${Date.now()}`;
   const log = withRequestId(requestId);
 
   const POLICY = "public" as const;
@@ -271,30 +286,35 @@ export async function POST(req: NextRequest) {
     // JSON body (helper enforces application/json)
     const body = await readJson<any>(req);
     if (!body || typeof body !== "object") {
-      throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Invalid JSON (expected application/json)" });
+      throw new ApiError({
+        status: 400,
+        code: "BAD_REQUEST",
+        message: "Invalid JSON (expected application/json)",
+      });
     }
 
     // Honeypot
-    if (s(body?.website, 200)) {
-      const res = ok({ id: null }, { requestId });
+    if (s((body as any)?.website, 200)) {
+      const res = ok({ id: null }, withRid(undefined, requestId));
       return withNoStore(res);
     }
 
-    const company = s(body?.company, 220);
-    const email = requireEmail(body?.email);
-    const phone = s(body?.phone, 60);
+    const company = s((body as any)?.company, 220);
+    const email = requireEmail((body as any)?.email);
+    const phone = s((body as any)?.phone, 60);
 
-    const quoteNumber = s(body?.quoteNumber, 80);
-    const po = s(body?.po, 80);
+    const quoteNumber = s((body as any)?.quoteNumber, 80);
+    const po = s((body as any)?.po, 80);
 
-    const instructions = s(body?.instructions, 5000);
-    const expectedDate = s(body?.expectedDate, 20);
-    const shippingOption = s(body?.shippingOption, 80);
-    const artworkNote = s(body?.artworkNote, 300);
+    const instructions = s((body as any)?.instructions, 5000);
+    const expectedDate = s((body as any)?.expectedDate, 20);
+    const shippingOption = s((body as any)?.shippingOption, 80);
+    const artworkNote = s((body as any)?.artworkNote, 300);
 
     if (!company) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Company is required" });
     if (!phone) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Phone is required" });
-    if (!quoteNumber) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Quote number is required" });
+    if (!quoteNumber)
+      throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Quote number is required" });
 
     const pool = getPool();
     const client = await pool.connect();
@@ -315,7 +335,7 @@ export async function POST(req: NextRequest) {
         ORDER BY created_at DESC
         LIMIT 1
         `,
-        [email, quoteNumber],
+        [email, quoteNumber]
       );
 
       let requestRowId = String(dup.rows?.[0]?.id || "");
@@ -347,7 +367,7 @@ export async function POST(req: NextRequest) {
             expectedDate || "",
             shippingOption || null,
             artworkNote || null,
-          ],
+          ]
         );
         requestRowId = String(ins.rows?.[0]?.id || "");
       }
@@ -357,9 +377,7 @@ export async function POST(req: NextRequest) {
       const replyToSupport = (getSupportEmail() || "").trim() || undefined;
 
       const internalTo =
-        (process.env.SUPPORT_TO_EMAIL || "").trim() ||
-        (getSupportEmail() || "").trim() ||
-        email;
+        (process.env.SUPPORT_TO_EMAIL || "").trim() || (getSupportEmail() || "").trim() || email;
 
       const subjCustomer = `Custom order received — Quote ${quoteNumber}`;
       const subjInternal = `New custom order — Quote ${quoteNumber} — ${company}`;
@@ -370,7 +388,7 @@ export async function POST(req: NextRequest) {
           from,
           to: email,
           subject: subjCustomer,
-          reply_to: replyToSupport,
+          replyTo: replyToSupport, // ✅ replyTo (not reply_to)
           html: customerHtml({
             company,
             requestId: requestRowId,
@@ -415,7 +433,7 @@ export async function POST(req: NextRequest) {
           from,
           to: internalTo,
           subject: subjInternal,
-          reply_to: email, // replying goes to customer
+          replyTo: email, // ✅ replying goes to customer
           html: internalHtml({
             requestId: requestRowId,
             quoteNumber,
@@ -463,7 +481,7 @@ export async function POST(req: NextRequest) {
 
       await client.query("COMMIT");
 
-      const res = ok({ id: requestRowId }, { requestId });
+      const res = ok({ id: requestRowId }, withRid(undefined, requestId));
       return withNoStore(res);
     } catch (e: any) {
       await client.query("ROLLBACK");
@@ -492,8 +510,8 @@ export async function POST(req: NextRequest) {
     const msg = e instanceof Error ? e.message : "custom order route failed";
     log.error("custom order route failed", { message: msg, requestId, ip });
 
-    const res = fail(e, { requestId });
-    if (retryAfter) res.headers.set("retry-after", retryAfter);
+    const res = fail(e, withRid(undefined, requestId));
+    if (retryAfter) (res as any).headers?.set?.("retry-after", retryAfter);
     return withNoStore(res);
   }
 }

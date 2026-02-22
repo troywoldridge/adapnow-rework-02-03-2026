@@ -1,3 +1,4 @@
+// src/app/api/quotes/request/route.ts
 import "server-only";
 
 import { NextRequest } from "next/server";
@@ -21,6 +22,7 @@ export const revalidate = 0;
 
 declare global {
   // eslint-disable-next-line no-var
+// sourcery skip: avoid-using-var
   var __adapPgPool: Pool | undefined;
 
   // eslint-disable-next-line no-var
@@ -39,6 +41,12 @@ function withNoStore(res: Response) {
   const hs = noStoreHeaders();
   for (const [k, v] of Object.entries(hs)) (res as any).headers?.set?.(k, v);
   return res;
+}
+
+function withRid(init: ResponseInit | undefined, requestId: string): ResponseInit {
+  const headers = new Headers((init as any)?.headers);
+  headers.set("x-request-id", requestId);
+  return { ...(init || {}), headers };
 }
 
 function getPool(): Pool {
@@ -168,19 +176,25 @@ function quoteCustomerHtml(args: { name: string; quoteId: string; productType: s
       <div style="padding:20px;">
         <h1 style="margin:0 0 8px; font-size:20px; color:#0f172a;">Quote request received ✅</h1>
         <p style="margin:0 0 12px; color:#334155; line-height:1.5;">
-          Hi ${htmlEscape(args.name || "there")}, we got your quote request for <b>${htmlEscape(args.productType || "a product")}</b>.
+          Hi ${htmlEscape(args.name || "there")}, we got your quote request for <b>${htmlEscape(
+            args.productType || "a product"
+          )}</b>.
         </p>
 
         <div style="border:1px solid #eef0f6; background:#fafbff; border-radius:12px; padding:12px 14px; color:#0f172a;">
           <div style="font-size:12px; color:#64748b; margin-bottom:4px;">Request ID</div>
-          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight:700;">${htmlEscape(args.quoteId)}</div>
+          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight:700;">${htmlEscape(
+            args.quoteId
+          )}</div>
         </div>
 
         ${
           args.notes
             ? `<div style="margin-top:12px;">
                  <div style="font-size:12px; color:#64748b; margin-bottom:4px;">Your notes</div>
-                 <div style="border:1px solid #eef0f6; border-radius:12px; padding:12px 14px; color:#0f172a; white-space:pre-wrap;">${htmlEscape(args.notes)}</div>
+                 <div style="border:1px solid #eef0f6; border-radius:12px; padding:12px 14px; color:#0f172a; white-space:pre-wrap;">${htmlEscape(
+                   args.notes
+                 )}</div>
                </div>`
             : ""
         }
@@ -202,9 +216,17 @@ function quoteCustomerHtml(args: { name: string; quoteId: string; productType: s
 
         <div style="font-size:12px; color:#64748b; line-height:1.6;">
           Need help?
-          ${supportEmail ? ` Email <a href="mailto:${supportEmail}" style="color:#0047ab; text-decoration:none;">${supportEmail}</a>.` : ""}
+          ${
+            supportEmail
+              ? ` Email <a href="mailto:${supportEmail}" style="color:#0047ab; text-decoration:none;">${supportEmail}</a>.`
+              : ""
+          }
           ${supportPhone ? ` Call ${supportPhone}.` : ""}
-          ${supportUrl ? ` Visit <a href="${supportUrl}" style="color:#0047ab; text-decoration:none;">Support</a>.` : ""}
+          ${
+            supportUrl
+              ? ` Visit <a href="${supportUrl}" style="color:#0047ab; text-decoration:none;">Support</a>.`
+              : ""
+          }
         </div>
       </div>
     </div>
@@ -217,8 +239,12 @@ function quoteInternalHtml(args: Record<string, string>) {
     .map(
       ([k, v]) => `
       <tr>
-        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#64748b; font-size:12px; width:180px;">${htmlEscape(k)}</td>
-        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#0f172a; font-size:13px;">${htmlEscape(v)}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#64748b; font-size:12px; width:180px;">${htmlEscape(
+          k
+        )}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#0f172a; font-size:13px;">${htmlEscape(
+          v
+        )}</td>
       </tr>`
     )
     .join("");
@@ -239,7 +265,7 @@ function quoteInternalHtml(args: Record<string, string>) {
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getRequestIdFromHeaders(req) || `rid_${Date.now()}`;
+  const requestId = s(getRequestIdFromHeaders(req), 120) || `rid_${Date.now()}`;
   const log = withRequestId(requestId);
 
   const POLICY = "public" as const;
@@ -257,31 +283,36 @@ export async function POST(req: NextRequest) {
     // JSON body (uniform helper checks content-type)
     const body = await readJson<any>(req);
     if (!body || typeof body !== "object") {
-      throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Invalid JSON (expected application/json)" });
+      throw new ApiError({
+        status: 400,
+        code: "BAD_REQUEST",
+        message: "Invalid JSON (expected application/json)",
+      });
     }
 
     // Honeypot
-    if (s(body?.website, 200)) {
-      const res = ok({ id: null }, { requestId });
+    if (s((body as any)?.website, 200)) {
+      const res = ok({ id: null }, withRid(undefined, requestId));
       return withNoStore(res);
     }
 
     // Fields
-    const name = s(body?.name, 160);
-    const company = s(body?.company, 200);
-    const email = requireEmail(body?.email);
-    const phone = s(body?.phone, 60);
+    const name = s((body as any)?.name, 160);
+    const company = s((body as any)?.company, 200);
+    const email = requireEmail((body as any)?.email);
+    const phone = s((body as any)?.phone, 60);
 
-    const productType = s(body?.productType, 200);
-    const size = s(body?.size, 120);
-    const colors = s(body?.colors, 120);
-    const material = s(body?.material, 160);
-    const finishing = s(body?.finishing, 200);
-    const quantity = s(body?.quantity, 80);
-    const notes = s(body?.notes, 5000);
+    const productType = s((body as any)?.productType, 200);
+    const size = s((body as any)?.size, 120);
+    const colors = s((body as any)?.colors, 120);
+    const material = s((body as any)?.material, 160);
+    const finishing = s((body as any)?.finishing, 200);
+    const quantity = s((body as any)?.quantity, 80);
+    const notes = s((body as any)?.notes, 5000);
 
     if (!name) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Name is required" });
-    if (!productType) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Product type is required" });
+    if (!productType)
+      throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Product type is required" });
 
     const pool = getPool();
     const client = await pool.connect();
@@ -337,9 +368,7 @@ export async function POST(req: NextRequest) {
       const replyToSupport = (getSupportEmail() || "").trim() || undefined;
 
       const internalTo =
-        (process.env.SUPPORT_TO_EMAIL || "").trim() ||
-        (getSupportEmail() || "").trim() ||
-        email;
+        (process.env.SUPPORT_TO_EMAIL || "").trim() || (getSupportEmail() || "").trim() || email;
 
       const subjCustomer = `Quote request received — ${productType}`;
       const subjInternal = `New quote request — ${productType} — ${name}`;
@@ -350,7 +379,7 @@ export async function POST(req: NextRequest) {
           from,
           to: email,
           subject: subjCustomer,
-          reply_to: replyToSupport,
+          replyTo: replyToSupport, // ✅ replyTo (not reply_to)
           html: quoteCustomerHtml({ name, quoteId, productType, notes: notes || undefined }),
         });
         if (error) throw error;
@@ -386,7 +415,7 @@ export async function POST(req: NextRequest) {
           from,
           to: internalTo,
           subject: subjInternal,
-          reply_to: email, // replying goes to customer
+          replyTo: email, // ✅ replying goes to customer
           html: quoteInternalHtml({
             quoteId,
             name,
@@ -433,7 +462,7 @@ export async function POST(req: NextRequest) {
 
       await client.query("COMMIT");
 
-      const res = ok({ id: quoteId }, { requestId });
+      const res = ok({ id: quoteId }, withRid(undefined, requestId));
       return withNoStore(res);
     } catch (e: any) {
       await client.query("ROLLBACK");
@@ -462,8 +491,8 @@ export async function POST(req: NextRequest) {
     const msg = e instanceof Error ? e.message : "unknown_error";
     log.error("Quote request failed", { message: msg, requestId, ip });
 
-    const res = fail(e, { requestId });
-    if (retryAfter) res.headers.set("retry-after", retryAfter);
+    const res = fail(e, withRid(undefined, requestId));
+    if (retryAfter) (res as any).headers?.set?.("retry-after", retryAfter);
     return withNoStore(res);
   }
 }

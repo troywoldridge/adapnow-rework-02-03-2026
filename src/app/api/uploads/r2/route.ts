@@ -3,158 +3,199 @@ import "server-only";
 
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { z } from "zod";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { getR2PublicBaseUrl } from "@/lib/artwork/r2Public";
-import { jsonError, getRequestId } from "@/lib/apiError";
-import { withRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const ACCOUNT = process.env.R2_ACCOUNT_ID || "";
-const ACCESS = process.env.R2_ACCESS_KEY_ID || "";
-const SECRET = process.env.R2_SECRET_ACCESS_KEY || "";
-const BUCKET = process.env.R2_BUCKET || process.env.R2_BUCKET_NAME || "";
-const PREFIX = (process.env.R2_UPLOAD_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
-const EXPIRES = Math.max(60, Number(process.env.R2_PRESIGN_EXPIRES_SECONDS || 900));
+/* ------------------------- helpers ------------------------- */
+function s(v: unknown): string {
+  return String(v ?? "").trim();
+}
 
-function json(body: unknown, status = 200) {
-  return new NextResponse(JSON.stringify(body), {
+function readEnv(name: string): string {
+  const v = s(process.env[name]);
+  if (!v) throw new Error(`Missing ${name}`);
+  return v;
+}
+
+function readEnvOptional(name: string, fallback = ""): string {
+  const v = s(process.env[name]);
+  return v || fallback;
+}
+
+function getRequestId(req: NextRequest): string {
+  const existing = req.headers.get("x-request-id");
+  if (existing && existing.trim()) return existing.trim();
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `rid_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  }
+}
+
+function noStoreJson(req: NextRequest, body: unknown, status = 200) {
+  const requestId = (body as any)?.requestId || getRequestId(req);
+  return NextResponse.json(body, {
     status,
     headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+      "x-request-id": requestId,
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      Pragma: "no-cache",
     },
   });
 }
 
-function s3() {
-  if (!ACCOUNT || !ACCESS || !SECRET || !BUCKET) {
-    const miss = [
-      !ACCOUNT && "R2_ACCOUNT_ID",
-      !ACCESS && "R2_ACCESS_KEY_ID",
-      !SECRET && "R2_SECRET_ACCESS_KEY",
-      !BUCKET && "R2_BUCKET|R2_BUCKET_NAME",
-    ]
-      .filter(Boolean)
-      .join(", ");
-    throw new Error(`Missing env: ${miss}`);
+function sanitizeFilename(name: string): string {
+  const base = name
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop() || "file";
+  // allow letters, numbers, dot, dash, underscore
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 160);
+  return cleaned || "file";
+}
+
+function safePrefix(raw: string): string {
+  return raw.replace(/^\/+|\/+$/g, "");
+}
+
+function joinKey(prefix: string, parts: string[]): string {
+  const p = safePrefix(prefix);
+  const rest = parts
+    .map((x) => safePrefix(x))
+    .filter(Boolean)
+    .join("/");
+  return [p, rest].filter(Boolean).join("/");
+}
+
+function buildPublicUrl(publicBase: string, key: string): string | null {
+  const base = s(publicBase).replace(/\/+$/, "");
+  if (!base) return null;
+  // base must be a full URL
+  try {
+    const u = new URL(base);
+    // ensure single slash
+    return `${u.toString().replace(/\/+$/, "")}/${key.replace(/^\/+/, "")}`;
+  } catch {
+    return null;
   }
-
-  return new S3Client({
-    region: "auto",
-    endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: ACCESS, secretAccessKey: SECRET },
-    forcePathStyle: true,
-  });
 }
 
-const COOKIE_OPTS = {
-  httpOnly: true as const,
-  sameSite: "lax" as const,
-  path: "/" as const,
-  secure: process.env.NODE_ENV === "production",
-  maxAge: 60 * 60 * 24 * 30,
-};
+/* ------------------------- env + client ------------------------- */
+const ACCOUNT_ID = readEnv("R2_ACCOUNT_ID");
+const ACCESS_KEY_ID = readEnv("R2_ACCESS_KEY_ID");
+const SECRET_ACCESS_KEY = readEnv("R2_SECRET_ACCESS_KEY");
+const BUCKET = readEnv("R2_BUCKET_NAME");
 
-async function getJar() {
-  const maybe = cookies() as any;
-  return typeof maybe?.then === "function" ? await maybe : maybe;
-}
+const PUBLIC_BASE = readEnvOptional("R2_PUBLIC_BASE_URL", "").replace(/\/+$/, "");
+const PREFIX = safePrefix(readEnvOptional("R2_UPLOAD_PREFIX", "uploads"));
+const EXPIRES = (() => {
+  const raw = readEnvOptional("R2_PRESIGN_EXPIRES_SECONDS", "900");
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 && n <= 3600 ? Math.trunc(n) : 900;
+})();
 
-async function readOrCreateSid() {
-  const jar = await getJar();
-  const existing = jar?.get?.("sid")?.value ?? jar?.get?.("adap_sid")?.value ?? "";
-  if (existing) return { sid: existing, created: false };
-  return { sid: crypto.randomUUID(), created: true };
-}
+const s3 = new S3Client({
+  region: "auto",
+  endpoint: `https://${ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+});
 
-function setSid(res: NextResponse, sid: string) {
-  res.cookies.set("sid", sid, COOKIE_OPTS);
-  res.cookies.set("adap_sid", sid, COOKIE_OPTS);
-}
+/* ------------------------- schema ------------------------- */
+const BodySchema = z
+  .object({
+    filename: z.string().min(1).max(300),
+    contentType: z.string().min(1).max(200),
+    // optional “folding” hint — you can pass lineId/cartId/orderId/etc
+    scope: z.string().max(120).optional(),
+    // optional: override default prefix (still sanitized)
+    prefix: z.string().max(120).optional(),
+  })
+  .passthrough();
 
-function safeName(name: string) {
-  return String(name || "file")
-    .trim()
-    .replace(/[^a-zA-Z0-9.\-_]/g, "_")
-    .slice(-180);
-}
-
-function norm(v: unknown) {
-  return String(v ?? "").trim();
-}
-
+/**
+ * POST /api/uploads/r2
+ * Body: { filename, contentType, scope?, prefix? }
+ *
+ * Returns:
+ * {
+ *  ok, requestId,
+ *  key,
+ *  uploadUrl,   // presigned PUT
+ *  publicUrl?   // only if R2_PUBLIC_BASE_URL set
+ * }
+ */
 export async function POST(req: NextRequest) {
   const requestId = getRequestId(req);
-  const log = withRequestId(requestId);
 
   try {
-    const PUBLIC_BASE = getR2PublicBaseUrl(); // throws if invalid
-    const { sid } = await readOrCreateSid();
-
-    const body = (await req.json().catch(() => null)) as any;
-    if (!body) {
-      const res = jsonError(400, "Invalid JSON body", { code: "invalid_json", requestId });
-      setSid(res as NextResponse, sid);
-      return res;
+    const json = await req.json().catch(() => null);
+    const parsed = BodySchema.safeParse(json ?? {});
+    if (!parsed.success) {
+      return noStoreJson(
+        req,
+        {
+          ok: false as const,
+          requestId,
+          error: "invalid_body",
+          issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+        },
+        400,
+      );
     }
 
-    const filename = safeName(body.filename);
-    const contentType = norm(body.contentType) || "application/octet-stream";
+    const body = parsed.data;
 
-    const draftId = norm(body.draftId) || ""; // upload-before-cart
-    const lineId = norm(body.lineId) || ""; // upload-after-cart (optional)
+    const filename = sanitizeFilename(body.filename);
+    const contentType = s(body.contentType).toLowerCase();
 
-    if (!filename) {
-      const res = jsonError(400, "filename required", { code: "filename_required", requestId });
-      setSid(res as NextResponse, sid);
-      return res;
+    // basic allow-list (you can expand this)
+    // NOTE: don’t be too strict unless you want to block uploads.
+    if (!contentType || !contentType.includes("/")) {
+      return noStoreJson(req, { ok: false as const, requestId, error: "invalid_contentType" }, 400);
     }
 
-    // Key strategy:
-    // - If lineId exists: uploads/artwork/lines/<sid>/<lineId>/...
-    // - Else if draftId exists: uploads/artwork/staged/<sid>/<draftId>/...
-    // - Else: uploads/artwork/misc/<sid>/...
-    const keyParts = [
-      PREFIX,
-      "artwork",
-      lineId ? "lines" : draftId ? "staged" : "misc",
-      sid,
-      lineId || draftId || "",
-      `${Date.now()}-${filename}`,
-    ].filter(Boolean);
+    const scope = safePrefix(s(body.scope));
+    const prefixOverride = safePrefix(s(body.prefix));
+    const finalPrefix = prefixOverride || PREFIX;
 
-    const key = keyParts.join("/");
+    const id = crypto.randomUUID();
+    const key = joinKey(finalPrefix, [
+      scope || "",
+      `${Date.now()}_${id}_${filename}`,
+    ]);
 
-    const put = new PutObjectCommand({
+    const cmd = new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
       ContentType: contentType,
+      // optional: you can set CacheControl if your CDN rules expect it
+      // CacheControl: "public, max-age=31536000, immutable",
     });
 
-    const uploadUrl = await getSignedUrl(s3(), put, { expiresIn: EXPIRES });
-    const publicUrl = new URL(key.replace(/^\/+/, ""), PUBLIC_BASE + "/").toString();
+    const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: EXPIRES });
 
-    const res = json({ ok: true, uploadUrl, key, publicUrl }, 200);
-    setSid(res, sid);
-    return res;
-  } catch (err: any) {
-    const message = err?.message || "upload presign error";
-    log.error("/api/uploads/r2 error", { message });
-    return jsonError(500, String(message), { requestId });
+    const publicUrl = buildPublicUrl(PUBLIC_BASE, key);
+
+    return noStoreJson(req, {
+      ok: true as const,
+      requestId,
+      key,
+      uploadUrl,
+      ...(publicUrl ? { publicUrl } : {}),
+      expiresInSeconds: EXPIRES,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return noStoreJson(req, { ok: false as const, requestId, error: message || "upload_presign_failed" }, 500);
   }
 }
 
-// quick health check
-export async function GET() {
-  try {
-    getR2PublicBaseUrl();
-    return json({ ok: true });
-  } catch (e: any) {
-    return json({ ok: false, error: e?.message || "bad config" }, 500);
-  }
+export async function GET(req: NextRequest) {
+  const requestId = getRequestId(req);
+  return noStoreJson(req, { ok: false as const, requestId, error: "Method not allowed. Use POST." }, 405);
 }

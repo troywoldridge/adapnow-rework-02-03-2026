@@ -5,11 +5,31 @@ import { eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { carts } from "@/lib/db/schema/cart";
-import { getOrSetSid } from "@/lib/sid";
 
 export type CartRow = typeof carts.$inferSelect;
 
 const CART_COOKIE = "sid";
+
+async function getOrSetSid(): Promise<string> {
+  const jar = await cookies();
+  const existing = jar.get(CART_COOKIE)?.value;
+  if (existing) return String(existing);
+
+  // Prefer crypto.randomUUID when available, otherwise fallback to a short random string.
+  const sid =
+    typeof crypto?.randomUUID === "function"
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2, 10);
+
+  jar.set({
+    name: CART_COOKIE,
+    value: sid,
+    path: "/",
+    httpOnly: true,
+  });
+
+  return sid;
+}
 
 async function readSidFromCookie(): Promise<string | null> {
   const jar = await cookies();
@@ -53,7 +73,7 @@ export async function getOrCreateCartForSession(): Promise<CartRow> {
     .insert(carts)
     .values({ sid, status: "open" })
     // If another request inserts first, do nothing and then re-select.
-    // @ts-expect-error drizzle supports onConflictDoNothing on pg; types vary by setup
+    // drizzle supports onConflictDoNothing on pg; types vary by setup
     .onConflictDoNothing();
 
   const rows = await db

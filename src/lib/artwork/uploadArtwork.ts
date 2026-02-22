@@ -33,13 +33,16 @@ export async function uploadToR2ViaPresign(input: {
     return { ok: false, error: msg };
   }
 
+  // At this point we know data is a successful PresignPutResponse
+  const presign = data as PresignPutResponse;
+
   // 2) Upload to R2 using signed URL
-  const put = await fetch(data.url, {
+  const put = await fetch(presign.url, {
     method: "PUT",
     headers: {
-      ...(data.headers ?? {}),
+      ...(presign.headers ?? {}),
       // Ensure Content-Type is present
-      "Content-Type": (data.headers?.["Content-Type"] ?? contentType) as string,
+      "Content-Type": (presign.headers?.["Content-Type"] ?? contentType) as string,
     },
     body: f,
   });
@@ -49,5 +52,5 @@ export async function uploadToR2ViaPresign(input: {
     return { ok: false, error: `Upload failed (HTTP ${put.status}) ${text}`.trim() };
   }
 
-  return { ok: true, key: data.key };
+  return { ok: true, key: presign.key };
 }

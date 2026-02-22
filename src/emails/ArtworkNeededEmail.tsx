@@ -96,7 +96,7 @@ export default function ArtworkNeededEmail({
       <Body style={styles.body}>
         <Container style={styles.container}>
           <Section style={styles.header}>
-            {logoUrl ? <Img src={logoUrl} style={styles.logo} /> : null}
+            {logoUrl ? <Img src={logoUrl} style={styles.logo as React.CSSProperties} /> : null}
             <div style={styles.brandText}>
               {brandName}
               <div style={{ fontSize: 12, opacity: 0.85 }}>{brandTagline}</div>

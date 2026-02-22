@@ -233,14 +233,14 @@ export async function generateMetadata({
       follow: true,
       googleBot: { index: true, follow: true, "max-snippet": -1, "max-image-preview": "large", "max-video-preview": -1 },
     },
-    openGraph: {
-      type: "product",
-      title: metaTitle,
-      description: metaDesc,
-      url: canonical,
-      siteName: SITE_NAME,
-      images: ogImg ? [{ url: ogImg, width: 1200, height: 630, alt: metaTitle }] : undefined,
-    },
+ openGraph: {
+    type: "website",
+    title: metaTitle,
+    description: metaDesc,
+    url: absUrl(canonical),
+    siteName: SITE_NAME,
+    images: ogImg ? [ogImg] : undefined,
+  },
     twitter: {
       card: "summary_large_image",
       title: metaTitle,

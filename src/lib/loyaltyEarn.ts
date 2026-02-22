@@ -71,7 +71,7 @@ export async function awardLoyaltyPoints(args: {
   clerkUserId: string;
   email?: string | null;
   points: number;
-  reason?: string | null;
+  reason?: "purchase" | "refund" | "adjustment" | "signup" | "promotion" | null;
   orderId?: string | null;
 }): Promise<{ changed: boolean; snapshot: LoyaltySnapshot }> {
   const points = toInt(args.points, 0);
@@ -95,8 +95,9 @@ export async function awardLoyaltyPoints(args: {
     // record transaction
     const insertTx: LoyaltyTxInsert = {
       customerId: cust.id,
-      deltaPoints: points,
-      reason: args.reason ?? "earn",
+      walletId: wallet.id,
+      delta: points,
+      reason: args.reason ?? "purchase",
       orderId: args.orderId ?? null,
       createdAt: new Date(),
     };

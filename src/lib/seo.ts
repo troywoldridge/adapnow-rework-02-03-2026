@@ -1,6 +1,17 @@
 // src/lib/seo.ts
 import type { Metadata } from "next";
-import { cfUrl } from "@/lib/data";
+
+// Local fallback for cfUrl when "@/lib/data" doesn't export it.
+// If you have a canonical Cloudflare Images URL builder in your project, replace this implementation.
+function cfUrl(id: string) {
+  if (!id) return "";
+  // If the id is already a full URL, return it.
+  if (/^https?:\/\//.test(id)) return id;
+  // Prefer an explicit CF images base if provided; otherwise fall back to the site URL.
+  const base = (process.env.NEXT_PUBLIC_CF_IMAGES_BASE ?? "").trim().replace(/\/+$/, "");
+  const site = (process.env.NEXT_PUBLIC_SITE_URL ?? "").trim().replace(/\/+$/, "");
+  return base ? `${base}/${id}` : site ? `${site}/${id}` : `/${id}`;
+}
 
 const SITE =
   (process.env.NEXT_PUBLIC_SITE_URL ?? "").trim().replace(/\/+$/, "") ||

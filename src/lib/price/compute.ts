@@ -118,7 +118,7 @@ function extractUpstreamCostCents(upstream: UpstreamPriceShape, qty: number): { 
     u.linePriceCents,
     r?.linePriceCents,
     u.line_cost,
-    u.lineCostCents as any,
+    (u as any).lineCostCents,
   ];
 
   for (const c of lineCentsCandidates) {
@@ -135,7 +135,7 @@ function extractUpstreamCostCents(upstream: UpstreamPriceShape, qty: number): { 
     u.unitPriceCents,
     r?.unitPriceCents,
     u.unit_cost,
-    u.unitCostCents as any,
+    (u as any).unitCostCents,
   ];
 
   for (const c of unitCentsCandidates) {

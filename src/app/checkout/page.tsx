@@ -26,7 +26,7 @@ function moneyFmt(amount: number, currency: Currency) {
 
 /* --------------------- Load cart summary --------------------- */
 async function loadCartSummary() {
-  const jar = cookies();
+  const jar = await cookies();
   const sid = jar.get("sid")?.value ?? jar.get("adap_sid")?.value ?? "";
   if (!sid) return null;
 
@@ -64,7 +64,8 @@ async function loadCartSummary() {
   const subtotal = subtotalCents / 100;
 
   // selectedShipping.cost is stored in dollars in your app
-  const shipping = Number(cartRow.selectedShipping?.cost ?? 0);
+  const selectedShipping = cartRow.selectedShipping as { cost?: number } | null | undefined;
+  const shipping = Number(selectedShipping?.cost ?? 0);
   const tax = 0;
 
   const creditsCents = await getCartCreditsCents(cartRow.id);
@@ -75,7 +76,7 @@ async function loadCartSummary() {
   return {
     cartId: cartRow.id,
     currency: (cartRow.currency as Currency) ?? "USD",
-    shippingMeta: cartRow.selectedShipping ?? null,
+    shippingMeta: (cartRow.selectedShipping as { cost?: number; method?: string; days?: number; carrier?: string } | null) ?? null,
     subtotal,
     shipping,
     tax,

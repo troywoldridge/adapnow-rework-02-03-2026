@@ -61,12 +61,15 @@ async function postJson<T extends Record<string, unknown>>(url: string, payload:
   });
 
   const ct = res.headers.get("content-type") || "";
-  const data = ct.includes("application/json")
+  const raw = ct.includes("application/json")
     ? await res.json().catch(() => ({}))
     : { ok: false, error: await res.text().catch(() => "") };
 
-  if (!res.ok || !data?.ok) {
-    return { ok: false, error: String(data?.error || `HTTP ${res.status}`) };
+  // treat the parsed result as either ApiResp or a generic object and narrow when checking
+  const data = raw as ApiResp | Record<string, unknown>;
+
+  if (!res.ok || !(data as ApiResp).ok) {
+    return { ok: false, error: String((data as any)?.error || `HTTP ${res.status}`) };
   }
   return { ok: true };
 }
@@ -433,13 +436,19 @@ function CustomOrderForm() {
 
 /* --------------------------------- Inputs --------------------------------- */
 
-function Text(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) {
-  const { label, className, ...rest } = props;
+type TextProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, "onChange"> & {
+  label: string;
+  onChange?: (v: string) => void;
+};
+
+function Text(props: TextProps) {
+  const { label, className, onChange, ...rest } = props;
   return (
     <label className="block">
       <span className="block text-sm font-semibold text-slate-800">{label}</span>
       <input
-        {...rest}
+        {...(rest as React.InputHTMLAttributes<HTMLInputElement>)}
+        onChange={(e) => onChange?.(e.target.value)}
         className={cx(
           "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500",
           className
@@ -449,14 +458,20 @@ function Text(props: React.InputHTMLAttributes<HTMLInputElement> & { label: stri
   );
 }
 
-function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string }) {
-  const { label, className, ...rest } = props;
+type TextAreaProps = Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, "onChange"> & {
+  label: string;
+  onChange?: (v: string) => void;
+};
+
+function TextArea(props: TextAreaProps) {
+  const { label, className, onChange, ...rest } = props;
   return (
     <label className="block">
       <span className="block text-sm font-semibold text-slate-800">{label}</span>
       <textarea
-        {...rest}
+        {...(rest as React.TextareaHTMLAttributes<HTMLTextAreaElement>)}
         rows={4}
+        onChange={(e) => onChange?.(e.target.value)}
         className={cx(
           "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500",
           className
@@ -466,21 +481,19 @@ function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { l
   );
 }
 
-function Select({
-  label,
-  options = [],
-  className,
-  ...rest
-}: React.SelectHTMLAttributes<HTMLSelectElement> & { label: string; options?: string[] } & {
+type SelectProps = Omit<React.SelectHTMLAttributes<HTMLSelectElement>, "onChange" | "value"> & {
+  label: string;
+  options?: string[];
   value?: string;
   onChange?: (v: string) => void;
-}) {
-  const { value, onChange, ...selectRest } = rest as any;
+};
+
+function Select({ label, options = [], className, value, onChange, ...rest }: SelectProps) {
   return (
     <label className="block">
       <span className="block text-sm font-semibold text-slate-800">{label}</span>
       <select
-        {...selectRest}
+        {...(rest as React.SelectHTMLAttributes<HTMLSelectElement>)}
         value={value ?? ""}
         onChange={(e) => onChange?.(e.target.value)}
         className={cx(

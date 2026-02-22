@@ -11,9 +11,9 @@ export * from "./heroSlide";
 
 // Legacy modules (ok to keep during transition)
 export * from "./catalog";
-export * from "./category";
-export * from "./subcategory";
-export * from "./product";
+// omitted: export * from "./category"; // 'Category' is already exported by "./catalog", so avoid duplicate re-export
+// omitted: export * from "./subcategory"; // 'Subcategory' is already exported by "./catalog", so avoid duplicate re-export
+// export * from "./product";
 
 // API DTOs
 export * from "./api";

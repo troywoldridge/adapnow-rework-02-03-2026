@@ -31,7 +31,7 @@ const STRIPE_WEBHOOK_SECRET: string =
     throw new Error("Missing STRIPE_WEBHOOK_SECRET");
   })();
 
-const stripe = new Stripe(STRIPE_KEY, { apiVersion: "2025-07-30.basil" });
+const stripe = new Stripe(STRIPE_KEY, { apiVersion: "2026-01-28.clover" });
 
 /* ------------------------ small helpers ------------------------ */
 function toInt(v: unknown, fallback = 0): number {
@@ -41,6 +41,11 @@ function toInt(v: unknown, fallback = 0): number {
 function clamp0(n: number): number {
   return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
 }
+
+/**
+ * selectedShipping is stored as JSON in DB (often "unknown" type at compile time).
+ * We tolerate many shapes and treat cost as dollars.
+ */
 function shippingCentsFromSelectedShipping(selectedShipping: unknown): number {
   const s = selectedShipping as any;
   const dollars = Number(s?.cost ?? 0);
@@ -101,7 +106,7 @@ async function computeCartTotalsCents(
   cartRow: {
     id: string;
     currency: "USD" | "CAD" | string | null;
-    selectedShipping: { cost?: number | string | null } | null;
+    selectedShipping: unknown; // ✅ accept unknown; we parse safely in helper
   },
   opts: {
     stripeTotalCents?: number | null;
@@ -153,7 +158,6 @@ async function computeCartTotalsCents(
       taxCents = Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
       taxSource = "stripe_tax_calculation";
     } catch (e: any) {
-      // fall back below
       console.warn("[stripe/webhook] tax calculation retrieve failed:", e?.message || e);
     }
   }
@@ -230,13 +234,13 @@ async function finalizePaidOrderFromCartRef(args: {
   });
 
   const result = await transaction(async (tx: any) => {
-    const safeUserId = (cart as any).userId ?? cart.sid;
+    const safeUserId = (cart as any).userId ?? (cart as any).sid;
 
     const [order] = await tx
       .insert(orders)
       .values({
         userId: safeUserId,
-        cartId: cart.id,
+        cartId: (cart as any).id,
         status: "placed",
         paymentStatus: "paid",
         provider: "stripe",
@@ -244,25 +248,21 @@ async function finalizePaidOrderFromCartRef(args: {
 
         currency: totals.ordersCurrency,
 
-        // keep raw subtotal for reporting
         subtotalCents: totals.subtotalCents,
         shippingCents: totals.shippingCents,
         taxCents: totals.taxCents,
 
-        // credits are discounts
         discountCents: totals.discountCents,
         creditsCents: totals.creditsCents,
 
-        // IMPORTANT: total is already netSubtotal + shipping + tax
         totalCents: totals.totalCents,
 
         placedAt: new Date().toISOString(),
       } as any)
       .returning({ id: orders.id });
 
-    // close cart + clear credits
-    await tx.update(carts).set({ status: "closed" as any }).where(eq(carts.id, cart.id));
-    await tx.delete(cartCredits).where(eq(cartCredits.cartId, cart.id));
+    await tx.update(carts).set({ status: "closed" as any }).where(eq(carts.id, (cart as any).id));
+    await tx.delete(cartCredits).where(eq(cartCredits.cartId, (cart as any).id));
 
     return { orderId: String(order.id) };
   });
@@ -295,7 +295,6 @@ export async function POST(req: NextRequest) {
         const sid = pi.metadata?.sid ?? null;
         const cartId = pi.metadata?.cartId ?? null;
 
-        // preferred: Stripe Tax calculation id from your PI creation
         const taxCalculationId =
           typeof (pi.metadata as any)?.tax_calculation_id === "string"
             ? String((pi.metadata as any).tax_calculation_id)
@@ -335,8 +334,6 @@ export async function POST(req: NextRequest) {
             ? (session as any).amount_total
             : null;
 
-        // NOTE: Checkout Session may not include our PI metadata directly.
-        // If you want tax_calculation_id reliably here, you can retrieve the PI below.
         let taxCalculationId: string | null = null;
 
         try {

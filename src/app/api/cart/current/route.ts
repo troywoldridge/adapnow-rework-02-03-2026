@@ -1,22 +1,28 @@
 import "server-only";
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { withRequestId } from "@/lib/logger";
-import { getRequestId } from "@/lib/requestId";
 import { carts, cartLines, cartAttachments } from "@/lib/db/schema";
-
 import { getProductsByIds } from "@/lib/productResolver";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+const SID_COOKIE = "sid";
+
 /* =========================================================
    Helpers
    ========================================================= */
+function getRequestId(req: Request): string {
+  const v = req.headers.get("x-request-id");
+  return v && v.trim() ? v.trim() : crypto.randomUUID();
+}
+
 function noStore(res: NextResponse) {
   res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   res.headers.set("Pragma", "no-cache");
@@ -24,8 +30,10 @@ function noStore(res: NextResponse) {
   return res;
 }
 
-function getSidFromRequest(req: NextRequest): string {
-  return req.cookies.get("sid")?.value ?? req.cookies.get("adap_sid")?.value ?? "";
+// Next 14 (sync) + Next 15 (async) cookie helper
+async function getCookieJar() {
+  const maybe = cookies() as any;
+  return typeof maybe?.then === "function" ? await maybe : maybe;
 }
 
 function toNum(v: unknown, fallback = 0) {
@@ -61,7 +69,6 @@ type CurrentAttachment = {
   fileName: string;
   url?: string | null;
   key?: string | null;
-  cfImageId?: string | null;
   createdAt?: string | null;
 };
 
@@ -69,27 +76,25 @@ type CurrentEnvelope = {
   ok: true;
   cart: { id: string; sid: string; status: string; currency: "USD" | "CAD" } | null;
 
-  // ✅ canonical shape used by CartPageClient
   lines: CurrentCartLine[];
   attachments: Record<string, CurrentAttachment[]>;
   selectedShipping: unknown | null;
 
-  // ✅ backwards-compatible shape (used by older server pages)
+  // backwards-compat
   items: Array<{
     id: string;
     productId: number;
     quantity: number;
     optionIds: number[];
-    unitPrice?: number; // dollars
-    lineTotal?: number; // dollars
+    unitPrice?: number;
+    lineTotal?: number;
     name?: string | null;
-    image?: string | null; // cf image id
+    image?: string | null;
   }>;
 
-  // ✅ handy top-level summaries
   currency: "USD" | "CAD";
   subtotalCents: number;
-  subtotal: number; // dollars
+  subtotal: number;
 };
 
 function emptyEnvelope(currency: "USD" | "CAD" = "USD"): CurrentEnvelope {
@@ -109,12 +114,14 @@ function emptyEnvelope(currency: "USD" | "CAD" = "USD"): CurrentEnvelope {
 /* =========================================================
    Route
    ========================================================= */
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   const requestId = getRequestId(req);
   const log = withRequestId(requestId);
 
   try {
-    const sid = getSidFromRequest(req);
+    const jar = await getCookieJar();
+    const sid = jar?.get?.(SID_COOKIE)?.value ?? "";
+
     if (!sid) {
       return noStore(NextResponse.json(emptyEnvelope("USD"), { status: 200 }));
     }
@@ -130,15 +137,15 @@ export async function GET(req: NextRequest) {
 
     const currency = safeCurrency((openCart as any).currency ?? "USD");
 
-    // 2) Pull lines (no SQL join to products; we'll enrich from JSON)
+    // 2) Pull lines
     const lineRows = await db
       .select({
         lineId: cartLines.id,
         productId: cartLines.productId,
-        quantity: (cartLines as any).quantity, // adapt to your schema
-        unitPriceCents: (cartLines as any).unitPriceCents ?? null, // optional
-        lineTotalCents: (cartLines as any).lineTotalCents ?? null, // optional
-        optionChain: (cartLines as any).optionChain ?? null, // optional
+        quantity: (cartLines as any).quantity,
+        unitPriceCents: (cartLines as any).unitPriceCents ?? null,
+        lineTotalCents: (cartLines as any).lineTotalCents ?? null,
+        optionChain: (cartLines as any).optionChain ?? null,
       })
       .from(cartLines)
       .where(eq(cartLines.cartId, openCart.id));
@@ -159,8 +166,8 @@ export async function GET(req: NextRequest) {
         typeof r.lineTotalCents === "number"
           ? r.lineTotalCents
           : typeof unit === "number"
-            ? unit * qty
-            : null;
+          ? unit * qty
+          : null;
 
       return {
         id: String(r.lineId),
@@ -182,17 +189,16 @@ export async function GET(req: NextRequest) {
       const attRows = await db
         .select({
           id: cartAttachments.id,
-          cartLineId: cartAttachments.cartLineId, // ✅ correct column
+          cartLineId: (cartAttachments as any).cartLineId,
           fileName: cartAttachments.fileName,
           url: cartAttachments.url,
           key: cartAttachments.key,
           createdAt: (cartAttachments as any).createdAt,
-          // cfImageId: (cartAttachments as any).cfImageId ?? null,
         })
         .from(cartAttachments)
-        .where(inArray(cartAttachments.cartLineId, lineIds as any)); // ✅ correct column
+        .where(inArray((cartAttachments as any).cartLineId, lineIds as any));
 
-      for (const a of attRows) {
+      for (const a of attRows as any[]) {
         const lid = String(a.cartLineId);
         if (!attachmentsByLine[lid]) attachmentsByLine[lid] = [];
         attachmentsByLine[lid].push({
@@ -200,14 +206,13 @@ export async function GET(req: NextRequest) {
           fileName: a.fileName ?? "Artwork",
           url: a.url ?? null,
           key: a.key ?? null,
-          // cfImageId: (a as any).cfImageId ?? null,
           createdAt: a.createdAt ? String(a.createdAt) : null,
         });
       }
     }
 
-    // 4) Selected shipping (if you persist it on carts)
-    const selectedShipping = (openCart as any).selectedShipping ?? (openCart as any).shipping ?? null;
+    // 4) Selected shipping
+    const selectedShipping = (openCart as any).selectedShipping ?? null;
 
     // 5) Totals
     const subtotalCents = lines.reduce((sum, l) => {
@@ -215,7 +220,7 @@ export async function GET(req: NextRequest) {
       return sum + (Number.isFinite(n) ? n : 0);
     }, 0);
 
-    // 6) Back-compat `items`
+    // 6) Back-compat items
     const items = lines.map((l) => ({
       id: l.id,
       productId: l.productId,
@@ -230,18 +235,15 @@ export async function GET(req: NextRequest) {
     const body: CurrentEnvelope = {
       ok: true,
       cart: {
-        id: String(openCart.id),
-        sid: String(openCart.sid),
-        status: String(openCart.status),
+        id: String((openCart as any).id),
+        sid: String((openCart as any).sid),
+        status: String((openCart as any).status),
         currency,
       },
-
       lines,
       attachments: attachmentsByLine,
       selectedShipping,
-
       items,
-
       currency,
       subtotalCents,
       subtotal: subtotalCents / 100,

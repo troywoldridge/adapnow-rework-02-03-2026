@@ -3,6 +3,14 @@ import type { Category } from "@/types/category";
 import type { Subcategory } from "@/types/subcategory";
 import type { Product } from "@/types/product";
 
+/**
+ * Your imported Category/Subcategory/Product types are currently resolving to `{}` (or too-loose),
+ * so TS won't allow property access (id/name).
+ *
+ * Fix: accept the external types for compatibility, but immediately narrow them to a safe shape
+ * with tiny runtime guards before reading fields.
+ */
+
 export type ProductBreadcrumbsProps = {
   category?: Category;
   subcategory?: Subcategory;
@@ -16,35 +24,63 @@ type Crumb = {
   current?: boolean;
 };
 
+type IdNameLike = {
+  id: string | number;
+  name?: string | null;
+};
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function toIdNameLike(input: unknown, fallbackName: string): IdNameLike | null {
+  if (!isRecord(input)) return null;
+
+  const idRaw = input.id;
+  const id =
+    typeof idRaw === "string" || typeof idRaw === "number" ? idRaw : null;
+  if (id === null) return null;
+
+  const nameRaw = input.name;
+  const name =
+    typeof nameRaw === "string" && nameRaw.trim()
+      ? nameRaw
+      : fallbackName;
+
+  return { id, name };
+}
+
 export default function ProductBreadcrumbs({
   category,
   subcategory,
   product,
 }: ProductBreadcrumbsProps) {
-  const crumbs: Crumb[] = [
-    { key: "all", label: "All Products", href: "/categories" },
-  ];
+  const cat = toIdNameLike(category as unknown, "Category");
+  const sub = toIdNameLike(subcategory as unknown, "Subcategory");
+  const prod = toIdNameLike(product as unknown, "Product");
 
-  if (category) {
+  const crumbs: Crumb[] = [{ key: "all", label: "All Products", href: "/categories" }];
+
+  if (cat) {
     crumbs.push({
-      key: `cat:${category.id}`,
-      label: category.name ?? "Category",
-      href: `/categories/${encodeURIComponent(String(category.id))}`,
+      key: `cat:${String(cat.id)}`,
+      label: cat.name ?? "Category",
+      href: `/categories/${encodeURIComponent(String(cat.id))}`,
     });
   }
 
-  if (subcategory) {
+  if (sub) {
     crumbs.push({
-      key: `sub:${subcategory.id}`,
-      label: subcategory.name ?? "Subcategory",
-      href: `/subcategories/${encodeURIComponent(String(subcategory.id))}`,
+      key: `sub:${String(sub.id)}`,
+      label: sub.name ?? "Subcategory",
+      href: `/subcategories/${encodeURIComponent(String(sub.id))}`,
     });
   }
 
-  if (product) {
+  if (prod) {
     crumbs.push({
-      key: `prod:${product.id}`,
-      label: product.name ?? "Product",
+      key: `prod:${String(prod.id)}`,
+      label: prod.name ?? "Product",
       current: true,
     });
   }

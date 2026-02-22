@@ -1,18 +1,52 @@
+// src/app/api/quotes/route.ts
 import "server-only";
 
-import { NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { Pool } from "pg";
-import { getResendClient, getInvoicesFromEmail, getSupportEmail, getSupportPhone, getSupportUrl } from "@/lib/email/resend";
+
+import {
+  getResendClient,
+  getInvoicesFromEmail,
+  getSupportEmail,
+  getSupportPhone,
+  getSupportUrl,
+} from "@/lib/email/resend";
+
+import { ApiError, ok, fail, getRequestIdFromHeaders, readJson } from "@/lib/apiError";
+import { withRequestId } from "@/lib/logger";
+import { enforcePolicy, logAuthzDenial } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 declare global {
   // eslint-disable-next-line no-var
+// sourcery skip: avoid-using-var
   var __adapPgPool: Pool | undefined;
 
   // eslint-disable-next-line no-var
   var __adapRate: Map<string, { count: number; resetAt: number }> | undefined;
+}
+
+function noStoreHeaders() {
+  return {
+    "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    pragma: "no-cache",
+    expires: "0",
+  } as const;
+}
+
+function withNoStore(res: Response) {
+  const hs = noStoreHeaders();
+  for (const [k, v] of Object.entries(hs)) (res as any).headers?.set?.(k, v);
+  return res;
+}
+
+function withRid(init: ResponseInit | undefined, requestId: string): ResponseInit {
+  const headers = new Headers((init as any)?.headers);
+  headers.set("x-request-id", requestId);
+  return { ...(init || {}), headers };
 }
 
 function getPool(): Pool {
@@ -33,7 +67,7 @@ function s(v: unknown, max = 5000): string {
 function requireEmail(raw: unknown): string {
   const email = s(raw, 320).toLowerCase();
   if (!email || !email.includes("@") || email.startsWith("@") || email.endsWith("@")) {
-    throw new Error("Invalid email");
+    throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Invalid email" });
   }
   return email;
 }
@@ -61,7 +95,6 @@ function htmlEscape(x: string): string {
 
 function rateLimitOrThrow(ip: string) {
   // Simple in-memory rate limit: 10 requests / 5 minutes per IP
-  // (Good enough to stop spam bursts; can be swapped for Redis later.)
   const WINDOW_MS = 5 * 60 * 1000;
   const MAX = 10;
 
@@ -74,13 +107,16 @@ function rateLimitOrThrow(ip: string) {
     global.__adapRate.set(key, { count: 1, resetAt: now + WINDOW_MS });
     return;
   }
+
   row.count += 1;
   if (row.count > MAX) {
     const retrySeconds = Math.max(1, Math.ceil((row.resetAt - now) / 1000));
-    const err: any = new Error("Too many requests. Please try again shortly.");
-    err.status = 429;
-    err.retryAfter = retrySeconds;
-    throw err;
+    throw new ApiError({
+      status: 429,
+      code: "RATE_LIMITED",
+      message: "Too many requests. Please try again shortly.",
+      details: { retryAfter: retrySeconds },
+    });
   }
 }
 
@@ -123,12 +159,7 @@ async function logEmailOutbox(args: {
   await args.client.query(q, vals);
 }
 
-function quoteCustomerHtml(args: {
-  name: string;
-  requestId: string;
-  productType: string;
-  notes?: string;
-}) {
+function quoteCustomerHtml(args: { name: string; requestId: string; productType: string; notes?: string }) {
   const brand = "ADAP";
   const tagline = "Custom Print Experts";
   const supportEmail = getSupportEmail();
@@ -146,19 +177,25 @@ function quoteCustomerHtml(args: {
       <div style="padding:20px;">
         <h1 style="margin:0 0 8px; font-size:20px; color:#0f172a;">Quote request received ✅</h1>
         <p style="margin:0 0 12px; color:#334155; line-height:1.5;">
-          Hi ${htmlEscape(args.name || "there")}, we got your quote request for <b>${htmlEscape(args.productType || "a product")}</b>.
+          Hi ${htmlEscape(args.name || "there")}, we got your quote request for <b>${htmlEscape(
+            args.productType || "a product"
+          )}</b>.
         </p>
 
         <div style="border:1px solid #eef0f6; background:#fafbff; border-radius:12px; padding:12px 14px; color:#0f172a;">
           <div style="font-size:12px; color:#64748b; margin-bottom:4px;">Request ID</div>
-          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight:700;">${htmlEscape(args.requestId)}</div>
+          <div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight:700;">${htmlEscape(
+            args.requestId
+          )}</div>
         </div>
 
         ${
           args.notes
             ? `<div style="margin-top:12px;">
                  <div style="font-size:12px; color:#64748b; margin-bottom:4px;">Your notes</div>
-                 <div style="border:1px solid #eef0f6; border-radius:12px; padding:12px 14px; color:#0f172a; white-space:pre-wrap;">${htmlEscape(args.notes)}</div>
+                 <div style="border:1px solid #eef0f6; border-radius:12px; padding:12px 14px; color:#0f172a; white-space:pre-wrap;">${htmlEscape(
+                   args.notes
+                 )}</div>
                </div>`
             : ""
         }
@@ -180,9 +217,17 @@ function quoteCustomerHtml(args: {
 
         <div style="font-size:12px; color:#64748b; line-height:1.6;">
           Need help?
-          ${supportEmail ? ` Email <a href="mailto:${supportEmail}" style="color:#0047ab; text-decoration:none;">${supportEmail}</a>.` : ""}
+          ${
+            supportEmail
+              ? ` Email <a href="mailto:${supportEmail}" style="color:#0047ab; text-decoration:none;">${supportEmail}</a>.`
+              : ""
+          }
           ${supportPhone ? ` Call ${supportPhone}.` : ""}
-          ${supportUrl ? ` Visit <a href="${supportUrl}" style="color:#0047ab; text-decoration:none;">Support</a>.` : ""}
+          ${
+            supportUrl
+              ? ` Visit <a href="${supportUrl}" style="color:#0047ab; text-decoration:none;">Support</a>.`
+              : ""
+          }
         </div>
       </div>
     </div>
@@ -195,8 +240,12 @@ function quoteInternalHtml(args: Record<string, string>) {
     .map(
       ([k, v]) => `
       <tr>
-        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#64748b; font-size:12px; width:180px;">${htmlEscape(k)}</td>
-        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#0f172a; font-size:13px;">${htmlEscape(v)}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#64748b; font-size:12px; width:180px;">${htmlEscape(
+          k
+        )}</td>
+        <td style="padding:8px 10px; border-bottom:1px solid #eef0f6; color:#0f172a; font-size:13px;">${htmlEscape(
+          v
+        )}</td>
       </tr>`
     )
     .join("");
@@ -216,210 +265,236 @@ function quoteInternalHtml(args: Record<string, string>) {
   </div>`;
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const requestId = s(getRequestIdFromHeaders(req), 120) || `rid_${Date.now()}`;
+  const log = withRequestId(requestId);
+
+  const POLICY = "public" as const;
+
   const h = new Headers(req.headers);
   const ua = s(h.get("user-agent") || "", 800);
   const ip = s(ipFromHeaders(h), 120);
 
   try {
+    await enforcePolicy(req, POLICY);
+
+    // Rate limit
     rateLimitOrThrow(ip);
-  } catch (e: any) {
-    const headers: Record<string, string> = {};
-    if (e?.retryAfter) headers["retry-after"] = String(e.retryAfter);
-    return NextResponse.json({ ok: false, error: s(e?.message || "Rate limited", 200) }, { status: e?.status || 429, headers });
-  }
 
-  let body: any = null;
-  try {
-    const ct = (h.get("content-type") || "").toLowerCase();
-    if (!ct.includes("application/json")) {
-      return NextResponse.json({ ok: false, error: "Expected application/json" }, { status: 415 });
+    // JSON body
+    const body = await readJson<any>(req);
+    if (!body || typeof body !== "object") {
+      throw new ApiError({
+        status: 400,
+        code: "BAD_REQUEST",
+        message: "Invalid JSON (expected application/json)",
+      });
     }
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
-  }
 
-  // Honeypot (bots will fill hidden "website" field)
-  if (s(body?.website, 200)) {
-    return NextResponse.json({ ok: true, id: null }, { status: 200 });
-  }
+    // Honeypot
+    if (s((body as any)?.website, 200)) {
+      const res = ok({ id: null }, withRid(undefined, requestId));
+      return withNoStore(res);
+    }
 
-  // Form fields (mirrors QuotesClient)
-  const name = s(body?.name, 160);
-  const company = s(body?.company, 200);
-  const email = (() => {
-    try { return requireEmail(body?.email); } catch { return ""; }
-  })();
-  const phone = s(body?.phone, 60);
+    // Fields
+    const name = s((body as any)?.name, 160);
+    const company = s((body as any)?.company, 200);
+    const email = requireEmail((body as any)?.email);
+    const phone = s((body as any)?.phone, 60);
 
-  const productType = s(body?.productType, 200);
-  const size = s(body?.size, 120);
-  const colors = s(body?.colors, 120);
-  const material = s(body?.material, 160);
-  const finishing = s(body?.finishing, 200);
-  const quantity = s(body?.quantity, 80);
-  const notes = s(body?.notes, 5000);
+    const productType = s((body as any)?.productType, 200);
+    const size = s((body as any)?.size, 120);
+    const colors = s((body as any)?.colors, 120);
+    const material = s((body as any)?.material, 160);
+    const finishing = s((body as any)?.finishing, 200);
+    const quantity = s((body as any)?.quantity, 80);
+    const notes = s((body as any)?.notes, 5000);
 
-  if (!name) return NextResponse.json({ ok: false, error: "Name is required" }, { status: 400 });
-  if (!email) return NextResponse.json({ ok: false, error: "Valid email is required" }, { status: 400 });
-  if (!productType) return NextResponse.json({ ok: false, error: "Product type is required" }, { status: 400 });
+    if (!name) throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Name is required" });
+    if (!productType)
+      throw new ApiError({ status: 400, code: "BAD_REQUEST", message: "Product type is required" });
 
-  const pool = getPool();
-  const client = await pool.connect();
+    const pool = getPool();
+    const client = await pool.connect();
 
-  try {
-    await client.query("BEGIN");
+    try {
+      await client.query("BEGIN");
 
-    // Duplicate guard: same email + same core payload within last 5 minutes
-    const dup = await client.query(
-      `
-      SELECT id::text
-      FROM quote_requests
-      WHERE email = $1
-        AND product_type = $2
-        AND COALESCE(notes,'') = COALESCE($3,'')
-        AND created_at >= now() - interval '5 minutes'
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      [email, productType, notes || ""]
-    );
-
-    let requestId = String(dup.rows?.[0]?.id || "");
-    if (!requestId) {
-      const ins = await client.query(
+      // Duplicate guard: same email + same core payload within last 5 minutes
+      const dup = await client.query(
         `
-        INSERT INTO quote_requests (
-          name, company, email, phone,
-          product_type, size, colors, material, finishing, quantity, notes,
-          status
-        )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new')
-        RETURNING id::text
+        SELECT id::text
+        FROM quote_requests
+        WHERE email = $1
+          AND product_type = $2
+          AND COALESCE(notes,'') = COALESCE($3,'')
+          AND created_at >= now() - interval '5 minutes'
+        ORDER BY created_at DESC
+        LIMIT 1
         `,
-        [
-          name,
-          company || null,
-          email,
-          phone || null,
-          productType,
-          size || null,
-          colors || null,
-          material || null,
-          finishing || null,
-          quantity || null,
-          notes || null,
-        ]
+        [email, productType, notes || ""]
       );
-      requestId = String(ins.rows?.[0]?.id || "");
-    }
 
-    const resend = getResendClient();
-    const from = getInvoicesFromEmail();
-    const replyToSupport = (getSupportEmail() || "").trim() || undefined;
+      let rowId = String(dup.rows?.[0]?.id || "");
+      if (!rowId) {
+        const ins = await client.query(
+          `
+          INSERT INTO quote_requests (
+            name, company, email, phone,
+            product_type, size, colors, material, finishing, quantity, notes,
+            status
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new')
+          RETURNING id::text
+          `,
+          [
+            name,
+            company || null,
+            email,
+            phone || null,
+            productType,
+            size || null,
+            colors || null,
+            material || null,
+            finishing || null,
+            quantity || null,
+            notes || null,
+          ]
+        );
+        rowId = String(ins.rows?.[0]?.id || "");
+      }
 
-    const internalTo =
-      (process.env.SUPPORT_TO_EMAIL || "").trim() ||
-      (getSupportEmail() || "").trim() ||
-      email;
+      const resend = getResendClient();
+      const from = getInvoicesFromEmail();
+      const replyToSupport = (getSupportEmail() || "").trim() || undefined;
 
-    const subjCustomer = `Quote request received — ${productType}`;
-    const subjInternal = `New quote request — ${productType} — ${name}`;
+      const internalTo =
+        (process.env.SUPPORT_TO_EMAIL || "").trim() || (getSupportEmail() || "").trim() || email;
 
-    // Customer email (non-fatal if it fails)
-    try {
-      const { data, error } = await resend.emails.send({
-        from,
-        to: email,
-        subject: subjCustomer,
-        reply_to: replyToSupport,
-        html: quoteCustomerHtml({ name, requestId, productType, notes: notes || undefined }),
-      });
-      if (error) throw error;
+      const subjCustomer = `Quote request received — ${productType}`;
+      const subjInternal = `New quote request — ${productType} — ${name}`;
 
-      await logEmailOutbox({
-        client,
-        messageType: "quote_received_customer",
-        toEmail: email,
-        fromEmail: from,
-        subject: subjCustomer,
-        status: "sent",
-        resendId: data?.id || null,
-        relatedTable: "quote_requests",
-        relatedId: requestId,
-      });
+      // Customer email (non-fatal)
+      try {
+        const { data, error } = await resend.emails.send({
+          from,
+          to: email,
+          subject: subjCustomer,
+          replyTo: replyToSupport, // ✅ replyTo (not reply_to)
+          html: quoteCustomerHtml({ name, requestId: rowId, productType, notes: notes || undefined }),
+        });
+        if (error) throw error;
+
+        await logEmailOutbox({
+          client,
+          messageType: "quote_received_customer",
+          toEmail: email,
+          fromEmail: from,
+          subject: subjCustomer,
+          status: "sent",
+          resendId: data?.id || null,
+          relatedTable: "quote_requests",
+          relatedId: rowId,
+        });
+      } catch (e: any) {
+        await logEmailOutbox({
+          client,
+          messageType: "quote_received_customer",
+          toEmail: email,
+          fromEmail: from,
+          subject: subjCustomer,
+          status: "failed",
+          error: s(e?.message || e, 2000),
+          relatedTable: "quote_requests",
+          relatedId: rowId,
+        });
+      }
+
+      // Internal email (non-fatal)
+      try {
+        const { data, error } = await resend.emails.send({
+          from,
+          to: internalTo,
+          subject: subjInternal,
+          replyTo: email, // ✅ reply to customer
+          html: quoteInternalHtml({
+            requestId: rowId,
+            name,
+            company,
+            email,
+            phone,
+            productType,
+            size,
+            colors,
+            material,
+            finishing,
+            quantity,
+            notes,
+            ip,
+            userAgent: ua,
+          }),
+        });
+        if (error) throw error;
+
+        await logEmailOutbox({
+          client,
+          messageType: "quote_received_internal",
+          toEmail: internalTo,
+          fromEmail: from,
+          subject: subjInternal,
+          status: "sent",
+          resendId: data?.id || null,
+          relatedTable: "quote_requests",
+          relatedId: rowId,
+        });
+      } catch (e: any) {
+        await logEmailOutbox({
+          client,
+          messageType: "quote_received_internal",
+          toEmail: internalTo,
+          fromEmail: from,
+          subject: subjInternal,
+          status: "failed",
+          error: s(e?.message || e, 2000),
+          relatedTable: "quote_requests",
+          relatedId: rowId,
+        });
+      }
+
+      await client.query("COMMIT");
+
+      const res = ok({ id: rowId }, withRid(undefined, requestId));
+      return withNoStore(res);
     } catch (e: any) {
-      await logEmailOutbox({
-        client,
-        messageType: "quote_received_customer",
-        toEmail: email,
-        fromEmail: from,
-        subject: subjCustomer,
-        status: "failed",
-        error: s(e?.message || e, 2000),
-        relatedTable: "quote_requests",
-        relatedId: requestId,
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e: unknown) {
+    // Only log authz denials as authz
+    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+      logAuthzDenial({
+        req,
+        policy: POLICY,
+        requestId,
+        reason: e.message,
       });
     }
 
-    // Internal email (non-fatal if it fails)
-    try {
-      const { data, error } = await resend.emails.send({
-        from,
-        to: internalTo,
-        subject: subjInternal,
-        reply_to: email, // replying goes to customer
-        html: quoteInternalHtml({
-          requestId,
-          name,
-          company,
-          email,
-          phone,
-          productType,
-          size,
-          colors,
-          material,
-          finishing,
-          quantity,
-          notes,
-          ip,
-          userAgent: ua,
-        }),
-      });
-      if (error) throw error;
-
-      await logEmailOutbox({
-        client,
-        messageType: "quote_received_internal",
-        toEmail: internalTo,
-        fromEmail: from,
-        subject: subjInternal,
-        status: "sent",
-        resendId: data?.id || null,
-        relatedTable: "quote_requests",
-        relatedId: requestId,
-      });
-    } catch (e: any) {
-      await logEmailOutbox({
-        client,
-        messageType: "quote_received_internal",
-        toEmail: internalTo,
-        fromEmail: from,
-        subject: subjInternal,
-        status: "failed",
-        error: s(e?.message || e, 2000),
-        relatedTable: "quote_requests",
-        relatedId: requestId,
-      });
+    // Retry-After for rate limit
+    let retryAfter: string | undefined;
+    if (e instanceof ApiError && e.code === "RATE_LIMITED") {
+      const ra = (e.details as any)?.retryAfter;
+      if (typeof ra === "number" && Number.isFinite(ra)) retryAfter = String(Math.max(1, Math.floor(ra)));
     }
 
-    await client.query("COMMIT");
-    return NextResponse.json({ ok: true, id: requestId }, { status: 200 });
-  } catch (e: any) {
-    await client.query("ROLLBACK");
-    return NextResponse.json({ ok: false, error: s(e?.message || e, 1200) }, { status: 500 });
-  } finally {
-    client.release();
+    const msg = e instanceof Error ? e.message : "quote route failed";
+    log.error("Quote route failed", { message: msg, requestId, ip });
+
+    const res = fail(e, withRid(undefined, requestId));
+    if (retryAfter) (res as any).headers?.set?.("retry-after", retryAfter);
+    return withNoStore(res);
   }
 }

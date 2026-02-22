@@ -1,8 +1,7 @@
-// src/app/api/hero-analytics/route.ts
 import "server-only";
 
-import { NextResponse, type NextRequest } from "next/server";
 import crypto from "node:crypto";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@clerk/nextjs/server";
 
@@ -13,22 +12,19 @@ export const revalidate = 0;
 /**
  * POST /api/hero-analytics
  *
- * Use this for lightweight tracking of hero-banner events:
+ * Lightweight tracking of hero-banner events:
  * - impressions
  * - CTA clicks
  * - variant testing
  * - campaign attribution
  *
- * Response:
- * - { ok:true, requestId }
+ * Response: { ok:true, requestId }
  *
  * NOTE:
- * This implementation logs structured JSON to stdout.
- * You can later swap the logger sink (DB table, PostHog, GA4 server endpoint, etc.)
- * without changing the API contract.
+ * Logs structured JSON to stdout. Swap the sink later (DB/PostHog/GA4) without changing contract.
  */
 
-function getRequestId(req: NextRequest): string {
+function getRequestId(req: Request): string {
   const existing = req.headers.get("x-request-id");
   if (existing && existing.trim()) return existing.trim();
   try {
@@ -46,31 +42,32 @@ function getClientIp(h: Headers): string {
   return "0.0.0.0";
 }
 
-function noStoreJson(req: NextRequest, body: any, status = 200) {
-  const requestId = body?.requestId || getRequestId(req);
+function noStoreJson(req: Request, body: any, status = 200) {
+  const requestId = (body?.requestId as string | undefined) || getRequestId(req);
   return NextResponse.json(body, {
     status,
     headers: {
       "x-request-id": requestId,
-      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-      Pragma: "no-cache",
+      "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+      pragma: "no-cache",
     },
   });
 }
 
 const BodySchema = z
   .object({
-    event: z.string().trim().min(1).max(80), // e.g. "hero_impression", "hero_cta_click"
+    event: z.string().trim().min(1).max(80), // "hero_impression", "hero_cta_click"
     page: z.string().trim().min(1).max(200).optional(), // path or route
     heroId: z.string().trim().min(1).max(80).optional(), // which hero component/slot
     variant: z.string().trim().max(80).optional(), // A/B label
     campaign: z.string().trim().max(120).optional(), // campaign name
     ref: z.string().trim().max(200).optional(), // referral source
-    meta: z.record(z.any()).optional(), // free-form extras (kept small)
+    // ✅ Zod v4 fix: record(keySchema, valueSchema)
+    meta: z.record(z.string(), z.unknown()).optional(), // free-form extras (kept small)
   })
   .strict();
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   const requestId = getRequestId(req);
 
   try {
@@ -98,7 +95,6 @@ export async function POST(req: NextRequest) {
     // Keep payload size sane
     const meta = parsed.data.meta ? JSON.stringify(parsed.data.meta).slice(0, 4000) : null;
 
-    // Structured log line (replace with DB insert later if you want)
     console.log(
       JSON.stringify({
         ts: new Date().toISOString(),
@@ -118,13 +114,14 @@ export async function POST(req: NextRequest) {
     );
 
     return noStoreJson(req, { ok: true as const, requestId }, 200);
-  } catch (e: any) {
-    console.error("[/api/hero-analytics POST] failed", e?.message || e);
-    return noStoreJson(req, { ok: false as const, requestId, error: String(e?.message || e) }, 500);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[/api/hero-analytics POST] failed", msg);
+    return noStoreJson(req, { ok: false as const, requestId, error: msg || "unknown_error" }, 500);
   }
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   const requestId = getRequestId(req);
   return noStoreJson(req, { ok: false as const, requestId, error: "Method Not Allowed. Use POST." }, 405);
 }

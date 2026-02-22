@@ -151,7 +151,7 @@ export default function ProductConfigurator({ productId, options, pricingMatrix,
         setSelectedSummary(human);
 
         const pkg = json?.meta?.packageInfo || json?.packageInfo || json?.response?.packageInfo || null;
-        setPkgInfo(pkg);
+        setPkgInfo((pkg as Record<string, string | number>) ?? null);
       } catch (e: any) {
         if (e?.name === "AbortError") return;
 
@@ -189,7 +189,7 @@ export default function ProductConfigurator({ productId, options, pricingMatrix,
           if (val) human[g.label] = val.name;
         }
         setSelectedSummary(human);
-        setPkgInfo(hit.packageInfo ?? null);
+        setPkgInfo((hit.packageInfo as Record<string, string | number>) ?? null);
         setError(null);
         return;
       }
@@ -224,7 +224,7 @@ export default function ProductConfigurator({ productId, options, pricingMatrix,
             if (val) human[g.label] = val.name;
           }
           setSelectedSummary(human);
-          setPkgInfo(hit.packageInfo ?? null);
+          setPkgInfo((hit.packageInfo as Record<string, string | number>) ?? null);
           setError(null);
           return;
         }

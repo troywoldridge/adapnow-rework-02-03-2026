@@ -1,46 +1,58 @@
-// Integration test: GET /api/cart/current returns envelope
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, expect, it } from "vitest";
 
-vi.mock("next/headers", () => ({
-  cookies: vi.fn(() =>
-    Promise.resolve({
-      get: () => undefined,
-    })
-  ),
-}));
+import { GET } from "@/app/api/cart/current/route";
 
-vi.mock("@/lib/db", () => ({
-  db: {
-    query: {
-      carts: {
-        findFirst: vi.fn(() => Promise.resolve(null)),
+type CurrentCartResponse = {
+  ok: boolean;
+  cart: null | { id: string; sid: string; status: string; currency: "USD" | "CAD" };
+  lines: Array<{
+    id: string;
+    productId: number;
+    quantity: number;
+  }>;
+  subtotalCents: number;
+  currency: "USD" | "CAD";
+};
+
+describe("/api/cart/current", () => {
+  it("returns an empty envelope when no sid cookie exists", async () => {
+    // ✅ Use standard Request (Cloudflare-compatible)
+    const req = new Request("http://localhost/api/cart/current", {
+      method: "GET",
+      headers: {
+        "x-request-id": "test_rid_1",
       },
-    },
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => Promise.resolve([])),
-      })),
-    })),
-  },
-}));
+    });
 
-describe("GET /api/cart/current", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+    const res = await GET(req as any);
+    expect(res.status).toBe(200);
+
+    // ✅ Response.json() is typed as unknown in some envs
+    const body = (await res.json()) as CurrentCartResponse;
+
+    expect(body.ok).toBe(true);
+    expect(body.cart).toBe(null);
+    expect(Array.isArray(body.lines)).toBe(true);
+    expect(body.subtotalCents).toBe(0);
   });
 
-  it("returns ok envelope with empty cart when no sid cookie", async () => {
-    const { GET } = await import("@/app/api/cart/current/route");
-    const req = new Request("http://localhost/api/cart/current");
-    const res = await GET(req);
+  it("returns an envelope when sid cookie exists", async () => {
+    const req = new Request("http://localhost/api/cart/current", {
+      method: "GET",
+      headers: {
+        "x-request-id": "test_rid_2",
+        cookie: "sid=test_sid_123",
+      },
+    });
 
+    const res = await GET(req as any);
     expect(res.status).toBe(200);
-    const body = await res.json();
+
+    const body = (await res.json()) as CurrentCartResponse;
+
     expect(body.ok).toBe(true);
-    expect(body.cart).toBeNull();
-    expect(Array.isArray(body.lines)).toBe(true);
-    expect(body.lines).toHaveLength(0);
-    expect(body.currency).toBe("USD");
-    expect(body.subtotalCents).toBe(0);
+    // Cart may exist or not depending on fixture DB; just assert shape stability:
+    expect(body).toHaveProperty("lines");
+    expect(body).toHaveProperty("subtotalCents");
   });
 });

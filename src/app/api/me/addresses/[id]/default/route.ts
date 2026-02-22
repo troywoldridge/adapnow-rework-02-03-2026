@@ -1,80 +1,53 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { NextRequest, NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
+import { auth } from "@clerk/nextjs/server";
 
 import { db } from "@/lib/db";
-import { addresses } from "@/lib/db/schema/addresses"; // adjust path/name to yours
+import { customerAddresses } from "@/lib/db/schema/customerAddresses";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-function jsonError(status: number, message: string, extra?: Record<string, unknown>) {
-  return NextResponse.json(
-    { ok: false, error: message, ...(extra ?? {}) },
-    { status }
-  );
+const COOKIE_NAME = "adap_default_address_id";
+
+function noStore(res: NextResponse) {
+  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.headers.set("Pragma", "no-cache");
+  res.headers.set("Expires", "0");
+  return res;
 }
 
-/**
- * POST /api/me/addresses/[id]/default
- * Sets the given address (must belong to the authed user) as the default address.
- */
-export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const params = await ctx.params;
-  try {
-    const { userId } = await auth();
-    if (!userId) return jsonError(401, "unauthorized");
+function norm(v: unknown) {
+  return String(v ?? "").trim();
+}
 
-    const addressId = String(ctx?.params?.id ?? "").trim();
-    if (!addressId) return jsonError(400, "missing_address_id");
+export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const { userId } = await auth();
+  if (!userId) return noStore(NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 }));
 
-    // Transaction prevents racing requests from leaving multiple defaults.
-    await db.transaction(async (tx) => {
-      // Clear default for this user
-      await tx
-        .update(addresses)
-        .set({ isDefault: false })
-        .where(eq(addresses.userId, userId));
+  const { id } = await ctx.params; // ✅ fix Promise params
+  const addressId = norm(id);
+  if (!addressId) return noStore(NextResponse.json({ ok: false, error: "missing_id" }, { status: 400 }));
 
-      // Set requested address as default ONLY if it belongs to this user.
-      const res = await tx
-        .update(addresses)
-        .set({ isDefault: true })
-        .where(and(eq(addresses.id, addressId), eq(addresses.userId, userId)));
+  // Ensure the address belongs to this user
+  const row = await db.query.customerAddresses.findFirst({
+    where: and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, userId)),
+    columns: { id: true },
+  });
 
-      // Drizzle update return varies by driver; best-effort check.
-      const updatedRows =
-        typeof (res as any)?.rowCount === "number" ? (res as any).rowCount : null;
+  if (!row) return noStore(NextResponse.json({ ok: false, error: "not_found" }, { status: 404 }));
 
-      if (updatedRows === 0) {
-        // Address not found or not owned by user.
-        throw Object.assign(new Error("address_not_found"), { code: "address_not_found" });
-      }
-    });
+  const res = NextResponse.json({ ok: true, defaultAddressId: addressId }, { status: 200 });
+  res.cookies.set(COOKIE_NAME, addressId, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 60 * 60 * 24 * 365,
+  });
 
-    // Return updated list for UI refresh
-    const rows = await db
-      .select()
-      .from(addresses)
-      .where(eq(addresses.userId, userId));
-
-    const defaultAddress = rows.find((a: any) => Boolean(a?.isDefault)) ?? null;
-
-    return NextResponse.json({
-      ok: true,
-      addresses: rows,
-      defaultAddressId: (defaultAddress as any)?.id ?? null,
-    });
-  } catch (e: any) {
-    const msg = String(e?.message || "");
-    const code = String(e?.code || "");
-
-    if (code === "address_not_found" || msg === "address_not_found") {
-      return jsonError(404, "address_not_found");
-    }
-
-    console.error("set default address failed", e);
-    return jsonError(500, "internal_error", { detail: String(e?.message || e) });
-  }
+  return noStore(res);
 }

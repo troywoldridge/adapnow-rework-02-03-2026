@@ -1,3 +1,4 @@
+// src/app/cart/page.tsx
 import "server-only";
 
 export const dynamic = "force-dynamic";
@@ -11,8 +12,11 @@ import type { ShippingRate } from "@/components/CartShippingEstimator";
 type Currency = "USD" | "CAD";
 
 type ApiEnvelope = {
-  ok: true;
+  ok: boolean;
+
   cart?: { id: string; sid: string; status: string; currency?: Currency } | null;
+
+  // New canonical shape
   lines?: Array<{
     id: string;
     productId: number;
@@ -23,17 +27,19 @@ type ApiEnvelope = {
     unitPriceCents?: number | null;
     lineTotalCents?: number | null;
   }>;
-  // legacy fields (some endpoints might still return these)
+
+  // Legacy shape
   items?: Array<{
     id: string;
     productId: number;
     quantity: number;
     optionIds: number[];
-    unitPrice?: number;
-    lineTotal?: number;
+    unitPrice?: number; // dollars
+    lineTotal?: number; // dollars
     name?: string | null;
     image?: string | null;
   }>;
+
   subtotal?: number;
   currency?: Currency;
   selectedShipping?: ShippingRate | null;
@@ -49,7 +55,23 @@ type ClientItem = {
   serverUnitPrice?: number; // dollars
 };
 
+function toCurrency(v: unknown): Currency {
+  const x = String(v ?? "").toUpperCase();
+  return x === "CAD" ? "CAD" : "USD";
+}
+
+function toNumber(v: unknown, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function toInt(v: unknown, fallback: number): number {
+  const n = toNumber(v, NaN);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
 async function baseUrl(): Promise<string> {
+  // In your project typings, headers() is async.
   const h = await headers();
   const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
   const isLocal = host.startsWith("localhost") || host.startsWith("127.0.0.1");
@@ -57,8 +79,9 @@ async function baseUrl(): Promise<string> {
   return `${proto}://${host}`;
 }
 
-function cookieHeaderFromJar(jar: ReturnType<typeof cookies>): string {
-  // cookies() is synchronous in Next; do not await it.
+type CookieJar = Awaited<ReturnType<typeof cookies>>;
+
+function cookieHeaderFromJar(jar: CookieJar): string {
   const list = jar.getAll();
   return list.map((c) => `${c.name}=${c.value}`).join("; ");
 }
@@ -70,8 +93,8 @@ async function fetchCart(): Promise<{
 }> {
   const url = `${await baseUrl()}/api/cart/current`;
 
-  // forward cookies so the API sees the same session
-  const jar = cookies();
+  // Forward cookies so the API sees the same session
+  const jar = await cookies();
   const cookieHeader = cookieHeaderFromJar(jar);
 
   const res = await fetch(url, {
@@ -86,19 +109,19 @@ async function fetchCart(): Promise<{
   if (!res.ok) return { items: [], currency: "USD", initialShipping: null };
 
   const json = (await res.json().catch(() => null)) as ApiEnvelope | null;
-  if (!json) return { items: [], currency: "USD", initialShipping: null };
+  if (!json || typeof json !== "object") return { items: [], currency: "USD", initialShipping: null };
 
-  const currency: Currency = json.currency === "CAD" ? "CAD" : "USD";
-  const initialShipping: ShippingRate | null = json.selectedShipping ?? null;
+  const currency: Currency = toCurrency(json.currency);
+  const initialShipping: ShippingRate | null = (json.selectedShipping ?? null) as ShippingRate | null;
 
-  // Prefer `lines` (new canonical shape)
+  // Prefer `lines`
   if (Array.isArray(json.lines) && json.lines.length) {
     const items: ClientItem[] = json.lines.map((ln) => ({
       id: String(ln.id),
-      productId: Number(ln.productId),
+      productId: toInt(ln.productId, 0),
       name: ln.productName ?? `Product ${ln.productId}`,
       optionIds: Array.isArray(ln.optionIds) ? (ln.optionIds as number[]) : [],
-      quantity: Number.isFinite(Number(ln.quantity)) ? Number(ln.quantity) : 1,
+      quantity: Math.max(1, toInt(ln.quantity, 1)),
       cloudflareImageId: ln.productCfImageId ?? null,
       serverUnitPrice: typeof ln.unitPriceCents === "number" ? ln.unitPriceCents / 100 : undefined,
     }));
@@ -106,14 +129,14 @@ async function fetchCart(): Promise<{
     return { items, currency, initialShipping };
   }
 
-  // Fallback: `items` (legacy shape)
-  const itemsLegacy = Array.isArray(json.items) ? json.items : [];
-  const items: ClientItem[] = itemsLegacy.map((it: any) => ({
+  // Fallback: `items`
+  const legacy = Array.isArray(json.items) ? json.items : [];
+  const items: ClientItem[] = legacy.map((it) => ({
     id: String(it.id),
-    productId: Number(it.productId),
+    productId: toInt(it.productId, 0),
     name: it.name ?? `Product ${it.productId}`,
     optionIds: Array.isArray(it.optionIds) ? it.optionIds : [],
-    quantity: Number.isFinite(Number(it.quantity)) ? Number(it.quantity) : 1,
+    quantity: Math.max(1, toInt(it.quantity, 1)),
     cloudflareImageId: it.image ?? null,
     serverUnitPrice: typeof it.unitPrice === "number" ? it.unitPrice : undefined,
   }));
@@ -129,7 +152,7 @@ export default async function CartPage() {
   return (
     <>
       <CartPageClient
-        initialItems={items as any}
+        initialItems={items}
         currency={currency}
         store={store}
         initialShipping={initialShipping}

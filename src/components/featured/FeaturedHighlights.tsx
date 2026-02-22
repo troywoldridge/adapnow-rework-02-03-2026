@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo } from "react";
 
 import Image from "@/components/ImageSafe";
-import { cfImage } from "@/lib/cfImages";
+import { cfImage, type Variant } from "@/lib/cfImages";
 import productAssetsRaw from "@/data/productAssets.json";
 
 type ProductAsset = {
@@ -22,7 +22,7 @@ export type FeaturedHighlightsProps = {
    * Optional Cloudflare Images variant name.
    * Defaults to "public" (change if your project uses a different public variant).
    */
-  variant?: string;
+  variant?: Variant;
 };
 
 function toSlug(s: unknown) {

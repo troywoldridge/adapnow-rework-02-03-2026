@@ -31,7 +31,7 @@ function getStripe(): Stripe {
   if (!key) throw new Error("Missing STRIPE_SECRET_KEY");
 
   if (!stripeSingleton) {
-    stripeSingleton = new Stripe(key, { apiVersion: "2025-07-30.basil" });
+    stripeSingleton = new Stripe(key, { apiVersion: "2026-01-28.clover" });
   }
   return stripeSingleton;
 }

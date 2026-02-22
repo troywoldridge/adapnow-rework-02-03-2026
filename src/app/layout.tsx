@@ -1,6 +1,6 @@
 import "./globals.css";
 
-import { Suspense } from "react";
+import React, { Suspense } from "react";
 import type { Metadata, Viewport } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 
@@ -29,7 +29,7 @@ function envStr(name: string): string {
 
 function envOpt(name: string): string | undefined {
   const v = envStr(name);
-  return v ? v : undefined;
+  return v || undefined;
 }
 
 const SITE = envStr("NEXT_PUBLIC_SITE_URL").replace(/\/+$/, "") || "https://adapnow.com";
@@ -133,7 +133,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <ClerkProvider>
       <html lang="en">
         <body>
-          <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-2">
+          <a
+            href="#main"
+            className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-2"
+          >
             Skip to content
           </a>
 
@@ -145,12 +148,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <HeaderSlot />
           </Suspense>
 
-          {children}
+          {/* CRITICAL:
+              Wrap children in Suspense so any subtree that uses useSearchParams()
+              is inside a Server Suspense boundary during prerender/CSR bailout.
+              Ref: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout
+          */}
+          <Suspense fallback={null}>{children}</Suspense>
 
           <Suspense fallback={null}>
             <SignupPromoSlot />
           </Suspense>
-          <SiteFooter socials={SOCIALS} supportPhone={SUPPORT_PHONE} supportEmail={SUPPORT_EMAIL} />
+
+          {React.createElement(SiteFooter as any, {
+            socials: SOCIALS,
+            supportPhone: SUPPORT_PHONE,
+            supportEmail: SUPPORT_EMAIL,
+          })}
         </body>
       </html>
     </ClerkProvider>

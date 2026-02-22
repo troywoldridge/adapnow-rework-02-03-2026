@@ -232,7 +232,7 @@ export default function HomePage() {
             </h2>
 
             <Suspense fallback={<div className="h-56 bg-gray-100 animate-pulse rounded-xl" aria-hidden="true" />}>
-              <FeaturedCategories categories={featured} limit={3} />
+              <FeaturedCategories categories={featured} />
             </Suspense>
 
             {/* Crawlable internal links (helps discovery even if components are heavy) */}

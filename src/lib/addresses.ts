@@ -1,17 +1,16 @@
 import "server-only";
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql, type InferModel } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import {
-  customerAddresses,
-  type CustomerAddressRow,
-  type CustomerAddressInsert,
-} from "@/lib/db/schema/customerAddresses";
+import { customerAddresses } from "@/lib/db/schema/customerAddresses";
+
+type CustomerAddressInsert = InferModel<typeof customerAddresses, "insert">;
+type CustomerAddressRow = InferModel<typeof customerAddresses, "select">;
+export type AddressRow = CustomerAddressRow;
+
 import { encryptPhoneToString, normalizePhone } from "@/lib/cryptoPhone";
 import { ApiError } from "@/lib/apiError";
-
-type AddressRow = CustomerAddressRow;
 
 export type DefaultKind = "shipping" | "billing";
 
@@ -281,7 +280,7 @@ export async function updateAddress(
 
     ...(typeof patch.metadata !== "undefined" ? { metadata: patch.metadata as any } : {}),
 
-    updatedAt: sql`now()`,
+    updatedAt: (sql`now()` as any),
   };
 
   return db.transaction(async (tx) => {
@@ -336,7 +335,7 @@ export async function deleteAddress(id: string, customerId: string): Promise<voi
         deletedAt: sql`now()`,
         isDefaultShipping: false,
         isDefaultBilling: false,
-        updatedAt: sql`now()`,
+        updatedAt: (sql`now()` as any),
       })
       .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId)));
 
@@ -351,7 +350,7 @@ export async function deleteAddress(id: string, customerId: string): Promise<voi
       if (next[0]) {
         await tx
           .update(customerAddresses)
-          .set({ isDefaultShipping: true, updatedAt: sql`now()` })
+          .set({ isDefaultShipping: true, updatedAt: (sql`now()` as any) })
           .where(and(eq(customerAddresses.id, next[0].id), eq(customerAddresses.customerId, custId)));
       }
     }
@@ -367,7 +366,7 @@ export async function deleteAddress(id: string, customerId: string): Promise<voi
       if (next[0]) {
         await tx
           .update(customerAddresses)
-          .set({ isDefaultBilling: true, updatedAt: sql`now()` })
+          .set({ isDefaultBilling: true, updatedAt: (sql`now()` as any) })
           .where(and(eq(customerAddresses.id, next[0].id), eq(customerAddresses.customerId, custId)));
       }
     }
@@ -400,13 +399,13 @@ export async function setDefaultAddress(kind: DefaultKind, id: string, customerI
     // Unset current default for this kind
     await tx
       .update(customerAddresses)
-      .set({ ...setFalse, updatedAt: sql`now()` })
+      .set({ ...setFalse, updatedAt: (sql`now()` as any) })
       .where(and(eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
 
     // Set chosen id as default
     await tx
       .update(customerAddresses)
-      .set({ ...setTrue, updatedAt: sql`now()` })
+      .set({ ...setTrue, updatedAt: (sql`now()` as any) })
       .where(and(eq(customerAddresses.id, addrId), eq(customerAddresses.customerId, custId), sql`deleted_at is null`));
 
     void col; // keep TS happy in some builds

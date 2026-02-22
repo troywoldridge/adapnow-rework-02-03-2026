@@ -2,7 +2,7 @@
 import { auth } from "@clerk/nextjs/server";
 
 export async function requireAdmin() {
-  const { userId, sessionClaims } = auth();
+  const { userId, sessionClaims } = await auth();
   if (!userId) throw new Error("Unauthorized");
 
   const role = sessionClaims?.role;

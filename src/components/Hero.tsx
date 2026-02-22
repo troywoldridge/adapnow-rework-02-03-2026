@@ -1,10 +1,11 @@
 "use client";
 
+import * as React from "react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 
 import Image from "@/components/ImageSafe";
-import { getHeroSlides, type HeroSlide } from "@/lib/heroSlides";
+import { getHeroSlides } from "@/lib/heroSlides";
 import { trackHeroImpression, trackHeroClick } from "@/lib/heroAnalytics";
 import { cloudflareImagesLoader } from "@/lib/cfImages";
 
@@ -15,7 +16,17 @@ const SWIPE_MIN_PX = 42; // minimum distance to count as swipe
 const SWIPE_MAX_OFF_AXIS_PX = 90; // ignore if too vertical (scroll intent)
 const DRAG_CLICK_SUPPRESS_MS = 250; // prevent accidental click after swipe
 
-type SlideWithExtras = HeroSlide & {
+type LocalHeroSlide = {
+  id: string | number;
+  title: string;
+  description?: string;
+  alt?: string;
+  ctaHref?: string;
+  // allow other properties from the source so runtime fields can be accessed
+  [key: string]: any;
+};
+
+type SlideWithExtras = LocalHeroSlide & {
   imageUrl?: string;
   badge?: string;
   focal?: string; // "50% 50%"
@@ -46,6 +57,12 @@ function clampIndex(i: number, len: number) {
 function normFocal(v: unknown): string {
   const s = String(v ?? "").trim();
   return s && s.length <= 32 ? s : "50% 50%";
+}
+
+function safeAlt(v: unknown): string {
+  // Next/Image expects a string alt (not undefined)
+  const s = typeof v === "string" ? v.trim() : "";
+  return s || "";
 }
 
 type DragState = {
@@ -154,20 +171,23 @@ export default function Hero() {
   );
 
   // ---- Swipe / drag (snap) ----
-  const startDrag = useCallback((pointerId: number, x: number, y: number) => {
-    dragRef.current = {
-      active: true,
-      pointerId,
-      startX: x,
-      startY: y,
-      lastX: x,
-      lastY: y,
-      startedAt: Date.now(),
-      moved: false,
-    };
-    hoveringRef.current = true; // pause autoplay while interacting
-    clearTimer();
-  }, [clearTimer]);
+  const startDrag = useCallback(
+    (pointerId: number, x: number, y: number) => {
+      dragRef.current = {
+        active: true,
+        pointerId,
+        startX: x,
+        startY: y,
+        lastX: x,
+        lastY: y,
+        startedAt: Date.now(),
+        moved: false,
+      };
+      hoveringRef.current = true; // pause autoplay while interacting
+      clearTimer();
+    },
+    [clearTimer]
+  );
 
   const moveDrag = useCallback((x: number, y: number) => {
     const d = dragRef.current;
@@ -209,31 +229,40 @@ export default function Hero() {
     schedule();
   }, [next, prev, schedule]);
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    if (slides.length <= 1) return;
-    // Only left click for mouse; all touches allowed
-    if (e.pointerType === "mouse" && e.button !== 0) return;
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (slides.length <= 1) return;
+      // Only left click for mouse; all touches allowed
+      if (e.pointerType === "mouse" && e.button !== 0) return;
 
-    // Capture pointer so we keep getting events even if pointer leaves element
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    startDrag(e.pointerId, e.clientX, e.clientY);
-  }, [slides.length, startDrag]);
+      // Capture pointer so we keep getting events even if pointer leaves element
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      startDrag(e.pointerId, e.clientX, e.clientY);
+    },
+    [slides.length, startDrag]
+  );
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d.active) return;
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const d = dragRef.current;
+      if (!d.active) return;
 
-    // If dragging, prevent text selection and reduce accidental interactions
-    if (d.moved) e.preventDefault();
-    moveDrag(e.clientX, e.clientY);
-  }, [moveDrag]);
+      // If dragging, prevent text selection and reduce accidental interactions
+      if (d.moved) e.preventDefault();
+      moveDrag(e.clientX, e.clientY);
+    },
+    [moveDrag]
+  );
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
-    const d = dragRef.current;
-    if (!d.active) return;
-    if (d.pointerId !== e.pointerId) return;
-    endDrag();
-  }, [endDrag]);
+  const onPointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      const d = dragRef.current;
+      if (!d.active) return;
+      if (d.pointerId !== e.pointerId) return;
+      endDrag();
+    },
+    [endDrag]
+  );
 
   const onPointerCancel = useCallback(() => {
     if (!dragRef.current.active) return;
@@ -268,6 +297,7 @@ export default function Hero() {
           const active = i === index;
           const img = String((s as any).imageUrl ?? "").trim();
           const focal = normFocal((s as any).focal);
+          const alt = safeAlt(s.alt);
 
           return (
             <article
@@ -296,7 +326,7 @@ export default function Hero() {
                 <Image
                   loader={cloudflareImagesLoader}
                   src={img}
-                  alt={s.alt}
+                  alt={alt}
                   fill
                   priority={i === 0}
                   sizes="(min-width:1280px) 1280px, 100vw"
@@ -344,10 +374,20 @@ export default function Hero() {
         {slides.length > 1 ? (
           <>
             {/* Arrows */}
-            <button type="button" onClick={prev} aria-label="Previous slide" className="hero__arrow hero__arrow--left">
+            <button
+              type="button"
+              onClick={prev}
+              aria-label="Previous slide"
+              className="hero__arrow hero__arrow--left"
+            >
               ‹
             </button>
-            <button type="button" onClick={next} aria-label="Next slide" className="hero__arrow hero__arrow--right">
+            <button
+              type="button"
+              onClick={next}
+              aria-label="Next slide"
+              className="hero__arrow hero__arrow--right"
+            >
               ›
             </button>
 

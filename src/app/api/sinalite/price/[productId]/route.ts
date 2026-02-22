@@ -1,8 +1,8 @@
 // src/app/api/sinalite/price/[productId]/route.ts
 import "server-only";
 
-import { NextRequest, NextResponse } from "next/server";
 import crypto from "node:crypto";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getConfiguredPrice } from "@/lib/sinalite.client";
@@ -11,18 +11,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-/**
- * POST /api/sinalite/price/:productId
- *
- * Accepts several legacy request shapes and returns normalized pricing:
- * { ok, requestId, productId, quantity, currency, lineTotal, unitPrice }
- *
- * Future-proofing:
- * - requestId header + stable response envelope
- * - Zod validation for params/body
- * - option id normalization across multiple payload shapes
- * - defensive vendor response parsing (unknown shape)
- */
+const NumOrStr = z.union([z.number(), z.string()]);
+const NumOrStrArr = z.array(NumOrStr);
+const NumOrStrRecord = z.record(z.string(), NumOrStr); // ✅ Zod v4 requires keyType + valueType
 
 function getRequestId(req: NextRequest): string {
   const existing = req.headers.get("x-request-id");
@@ -34,8 +25,8 @@ function getRequestId(req: NextRequest): string {
   }
 }
 
-function noStoreJson(req: NextRequest, body: any, status = 200) {
-  const requestId = body?.requestId || getRequestId(req);
+function noStoreJson(req: NextRequest, body: unknown, status = 200) {
+  const requestId = (body as any)?.requestId || getRequestId(req);
   return NextResponse.json(body, {
     status,
     headers: {
@@ -52,14 +43,12 @@ const ParamsSchema = z.object({
 
 const BodySchema = z
   .object({
-    // preferred
-    optionIds: z.array(z.union([z.number(), z.string()])).optional(),
-    // legacy array
-    productOptions: z.union([z.array(z.union([z.number(), z.string()])), z.record(z.union([z.number(), z.string()]))]).optional(),
-    // optional quantity
-    quantity: z.union([z.number(), z.string()]).optional(),
+    optionIds: NumOrStrArr.optional(),
+    productOptions: z.union([NumOrStrArr, NumOrStrRecord]).optional(),
+    quantity: NumOrStr.optional(),
+    store: z.union([z.literal("US"), z.literal("CA")]).optional(),
   })
-  .passthrough(); // allow extra fields without breaking old clients
+  .passthrough();
 
 function toInt(v: unknown, fallback: number, min: number, max: number): number {
   const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
@@ -98,7 +87,6 @@ function normalizeOptionIdsFromBody(body: Record<string, unknown>): number[] {
   return out;
 }
 
-/** Safely pull a numeric total from any vendor shape */
 function extractLineTotal(x: unknown): number | null {
   if (!x || typeof x !== "object") return null;
   const o = x as Record<string, unknown>;
@@ -107,8 +95,7 @@ function extractLineTotal(x: unknown): number | null {
     o.lineTotal,
     o.total,
     o.price,
-    o.unitPrice, // legacy stored TOTAL under "unitPrice"
-    // sometimes nested { price2: { price } }
+    o.unitPrice,
     o.price2 && typeof o.price2 === "object" ? (o.price2 as Record<string, unknown>).price : undefined,
   ].filter((v) => v !== undefined && v !== null);
 
@@ -117,29 +104,50 @@ function extractLineTotal(x: unknown): number | null {
       typeof v === "string"
         ? Number(v.replace(/[^\d.]/g, ""))
         : typeof v === "number"
-        ? v
-        : NaN;
-    if (Number.isFinite(n) && n > 0) return n;
+          ? v
+          : NaN;
+    if (Number.isFinite(n) && n >= 0) return n;
   }
 
   return null;
 }
 
-/** Try to read a currency code from the vendor shape; default USD safety */
-function extractCurrency(x: unknown): "USD" | "CAD" {
+function extractCurrency(x: unknown, store?: "US" | "CA"): "USD" | "CAD" {
   if (x && typeof x === "object") {
     const cur = (x as any).currency;
     if (cur === "CAD") return "CAD";
+    if (cur === "USD") return "USD";
   }
-  return "USD";
+  return store === "CA" ? "CAD" : "USD";
+}
+
+async function callConfiguredPrice(args: {
+  productId: number;
+  optionIds: number[];
+  quantity: number;
+  store?: "US" | "CA";
+}): Promise<unknown> {
+  const fn = getConfiguredPrice as unknown as (...a: any[]) => Promise<unknown>;
+
+  try {
+    return await fn({
+      productId: args.productId,
+      optionIds: args.optionIds,
+      quantity: args.quantity,
+      store: args.store,
+    });
+  } catch {
+    return await fn(args.productId, args.optionIds, args.quantity, args.store);
+  }
 }
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ productId: string }> }) {
-  const params = await ctx.params;
   const requestId = getRequestId(req);
 
   try {
-    const p = ParamsSchema.safeParse(ctx.params);
+    const rawParams = await ctx.params;
+    const p = ParamsSchema.safeParse(rawParams);
+
     if (!p.success) {
       return noStoreJson(
         req,
@@ -153,7 +161,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ productId:
       );
     }
 
-    const pid = Number(p.data.productId);
+    const productId = Number(p.data.productId);
 
     const json = await req.json().catch(() => null);
     const b = BodySchema.safeParse(json ?? {});
@@ -179,39 +187,38 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ productId:
         {
           ok: false as const,
           requestId,
-          error: "optionIds[] required (array) or productOptions object/array with numeric values",
+          error: "optionIds_required",
+          message: "Provide optionIds[] or productOptions (array/object of numeric values).",
         },
         400
       );
     }
 
     const quantity = toInt(body.quantity, 1, 1, 100000);
+    const store =
+      body.store === "US" || body.store === "CA" ? (body.store as "US" | "CA") : undefined;
 
-    // Vendor/proxy helper returns unknown shape
-    const priced: unknown = await getConfiguredPrice(pid, optionIds, quantity);
-
+    const priced = await callConfiguredPrice({ productId, optionIds, quantity, store });
     const lineTotal = extractLineTotal(priced);
-    if (!lineTotal) {
-      return noStoreJson(
-        req,
-        { ok: false as const, requestId, error: "invalid_vendor_price" },
-        502
-      );
+
+    if (lineTotal == null) {
+      return noStoreJson(req, { ok: false as const, requestId, error: "invalid_vendor_price" }, 502);
     }
 
-    const currency = extractCurrency(priced);
+    const currency = extractCurrency(priced, store);
     const unitPrice = lineTotal / Math.max(1, quantity);
 
     return noStoreJson(req, {
       ok: true as const,
       requestId,
-      productId: pid,
+      productId,
       optionIds,
       quantity,
       currency,
       lineTotal,
       unitPrice,
-      // Keep raw vendor reply off by default (can add ?debug=1 later)
+      lineTotalCents: Math.round(lineTotal * 100),
+      unitPriceCents: Math.round(unitPrice * 100),
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

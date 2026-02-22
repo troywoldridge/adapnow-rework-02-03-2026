@@ -37,7 +37,7 @@ function sha256(buf: Buffer): Buffer {
   return crypto.createHash("sha256").update(buf).digest();
 }
 
-function normalizeKeyMaterial(s: string): string {
+function normalizeKeyMaterial(s?: string): string {
   return String(s ?? "").trim();
 }
 

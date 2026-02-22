@@ -94,6 +94,7 @@ function getStripeSecret(): string | null {
     process.env.STRIPE_SECRET ||
     "";
   const s = String(v).trim();
+// sourcery skip: simplify-ternary
   return s ? s : null;
 }
 

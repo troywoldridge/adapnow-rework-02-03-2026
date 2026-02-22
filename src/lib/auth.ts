@@ -71,10 +71,10 @@ async function resolveEmail(): Promise<string | null> {
 }
 
 export async function getAuthContext(req: Request, policy: AuthzPolicy): Promise<AuthContext> {
-  const requestId = getRequestIdFromHeaders(req.headers);
+  const requestId = getRequestIdFromHeaders(req);
 
   const cronOk = isCronAuthorized(req);
-  const { userId } = auth();
+  const { userId } = await auth();
 
   const email = userId ? await resolveEmail() : null;
   const authed = Boolean(userId);
@@ -104,7 +104,7 @@ export async function enforcePolicy(req: Request, policy: AuthzPolicy): Promise<
         status: 401,
         code: "CRON_UNAUTHORIZED",
         message: "Cron secret missing or invalid",
-        requestId: ctx.requestId,
+        details: { requestId: ctx.requestId },
       });
     }
     return ctx;
@@ -116,7 +116,7 @@ export async function enforcePolicy(req: Request, policy: AuthzPolicy): Promise<
         status: 401,
         code: "UNAUTHORIZED",
         message: "Authentication required",
-        requestId: ctx.requestId,
+        details: { requestId: ctx.requestId },
       });
     }
     return ctx;
@@ -128,7 +128,7 @@ export async function enforcePolicy(req: Request, policy: AuthzPolicy): Promise<
       status: 401,
       code: "UNAUTHORIZED",
       message: "Authentication required",
-      requestId: ctx.requestId,
+      details: { requestId: ctx.requestId },
     });
   }
 
@@ -137,7 +137,7 @@ export async function enforcePolicy(req: Request, policy: AuthzPolicy): Promise<
       status: 403,
       code: "FORBIDDEN",
       message: "Admin access required",
-      requestId: ctx.requestId,
+      details: { requestId: ctx.requestId },
     });
   }
 

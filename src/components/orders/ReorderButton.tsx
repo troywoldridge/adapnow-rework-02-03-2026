@@ -26,7 +26,15 @@ export default function ReorderButton({ orderId, className, children }: Props) {
         cache: "no-store",
       });
 
-      const json = await res.json().catch(() => null);
+      // Typed response shape from the reorder API
+      type ReorderResponse = {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+        redirect?: string;
+      } | null;
+
+      const json = (await res.json().catch(() => null)) as ReorderResponse;
 
       if (!res.ok || !json?.ok) {
         const msg =

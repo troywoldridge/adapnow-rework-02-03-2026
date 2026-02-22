@@ -128,7 +128,8 @@ function deny(
     ...meta,
   });
 
-  const res = NextResponse.json(apiError(status, code, message, { requestId }), { status });
+  // apiError(status, message, meta?) — include the machine code in meta
+  const res = NextResponse.json(apiError(status, message, { requestId, code }), { status });
   return { ok: false, res };
 }
 

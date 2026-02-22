@@ -1,9 +1,10 @@
+// src/app/cart/CartPageClient.tsx
 "use client";
 
 import * as React from "react";
 import { useEffect, useMemo, useState } from "react";
 import CartSummary from "@/components/CartSummary";
-import type { ShippingRate } from "@/components/CartShippingEstimator"; // estimator result shape
+import type { ShippingRate } from "@/components/CartShippingEstimator";
 
 /* =========================================================
    Types
@@ -11,12 +12,12 @@ import type { ShippingRate } from "@/components/CartShippingEstimator"; // estim
 type AnyItem = {
   id: string;
   productId: number;
-  name?: string | null; // product name (prefer this)
+  name?: string | null;
   optionIds: number[];
   quantity: number;
-  cloudflareImageId?: string | null; // product CF image id
-  serverUnitPrice?: number; // dollars from server
-  unitPrice?: number; // client override (dollars)
+  cloudflareImageId?: string | null;
+  serverUnitPrice?: number; // dollars
+  unitPrice?: number; // dollars (client override)
 };
 
 type SavedItem = {
@@ -26,7 +27,7 @@ type SavedItem = {
   optionIds: number[];
   quantity: number;
   cloudflareImageId?: string | null;
-  unitPrice?: number;
+  unitPrice?: number; // dollars
 };
 
 export type SelectedShipping = {
@@ -49,11 +50,12 @@ type Props = {
 type Attachment = {
   id: string;
   fileName: string;
-  url?: string | null; // public R2 (optionally proxied by CF)
-  cfImageId?: string | null; // if you later store Cloudflare Images id for artwork
+  url?: string | null;
+  cfImageId?: string | null;
 };
 
 type ApiCurrent = {
+  ok?: boolean;
   cart: { id: string; sid: string; status: string; currency?: "USD" | "CAD" } | null;
   lines: Array<{
     id: string;
@@ -62,8 +64,8 @@ type ApiCurrent = {
     productCfImageId?: string | null;
     quantity: number;
     optionIds?: number[] | null;
-    unitPriceCents?: number | null; // cents, optional
-    lineTotalCents?: number | null; // cents, optional
+    unitPriceCents?: number | null;
+    lineTotalCents?: number | null;
     optionChain?: string | null;
   }>;
   attachments: Record<
@@ -88,6 +90,30 @@ type MiniLine = {
 const SAVED_KEY = "ADAP_SAVED_V1";
 
 /* =========================================================
+   Small runtime guards (kills the TS `{}` problem cleanly)
+   ========================================================= */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function getRecord(v: unknown, key: string): Record<string, unknown> | null {
+  if (!isRecord(v)) return null;
+  const x = v[key];
+  return isRecord(x) ? x : null;
+}
+
+function getArray(v: unknown, key: string): unknown[] | null {
+  if (!isRecord(v)) return null;
+  const x = v[key];
+  return Array.isArray(x) ? x : null;
+}
+
+function getMaybe(v: unknown, key: string): unknown {
+  if (!isRecord(v)) return undefined;
+  return v[key];
+}
+
+/* =========================================================
    Helpers
    ========================================================= */
 const money = (n: number, currency: "USD" | "CAD") =>
@@ -104,7 +130,7 @@ function clampQty(n: number) {
   return Math.max(1, Math.min(9999, x));
 }
 
-// Normalize any incoming rate (estimator/server) into our chosen/DB shape
+// Normalize any incoming rate into our chosen shape
 function toSelectedShipping(anyRate: any): SelectedShipping | null {
   if (!anyRate) return null;
 
@@ -131,9 +157,10 @@ function toSelectedShipping(anyRate: any): SelectedShipping | null {
   return { carrier, method, cost, days, currency };
 }
 
-/** Pick the best thumbnail for a line:
- *  1) If artwork attachment exists: prefer its Cloudflare Images ID, else its public URL
- *  2) Else fall back to product Cloudflare image
+/**
+ * Pick the best thumbnail for a line:
+ * 1) artwork attachment cfImageId/url
+ * 2) product cf image id
  */
 function pickLineThumb(
   it: AnyItem,
@@ -204,66 +231,110 @@ export default function CartPageClient({ initialItems, currency, store, initialS
       // 1) Prefer /api/cart/current
       const res = await fetch("/api/cart/current", { cache: "no-store" });
       if (res.ok) {
-        const json = (await res.json()) as ApiCurrent;
+        const json = (await res.json().catch(() => null)) as ApiCurrent | null;
 
-        // Map lines to our local AnyItem shape (convert cents -> dollars if provided)
-        const mapped: AnyItem[] = (json.lines || []).map((ln) => {
-          const unitDollars = typeof ln.unitPriceCents === "number" ? ln.unitPriceCents / 100 : undefined;
+        if (json && Array.isArray(json.lines)) {
+          const mapped: AnyItem[] = (json.lines || []).map((ln) => {
+            const unitDollars = typeof ln.unitPriceCents === "number" ? ln.unitPriceCents / 100 : undefined;
 
-          return {
-            id: String(ln.id),
-            productId: Number(ln.productId),
-            name: ln.productName ?? null,
-            optionIds: Array.isArray(ln.optionIds) ? (ln.optionIds as number[]) : [],
-            quantity: Number(ln.quantity || 1),
-            cloudflareImageId: ln.productCfImageId ?? null,
-            serverUnitPrice: unitDollars,
-          };
-        });
+            return {
+              id: String(ln.id),
+              productId: Number(ln.productId),
+              name: ln.productName ?? null,
+              optionIds: Array.isArray(ln.optionIds) ? (ln.optionIds as number[]) : [],
+              quantity: Number(ln.quantity || 1),
+              cloudflareImageId: ln.productCfImageId ?? null,
+              serverUnitPrice: unitDollars,
+            };
+          });
 
-        setItems(mapped);
+          setItems(mapped);
 
-        // attachments mapping
-        const att: Record<string, Attachment[]> = {};
-        for (const [lineId, list] of Object.entries(json.attachments || {})) {
-          att[lineId] = (list || []).map((a) => ({
-            id: String(a.id),
-            fileName: a.fileName ?? "Artwork",
-            url: a.url ?? undefined,
-            cfImageId: a.cfImageId ?? undefined,
-          }));
+          // attachments mapping
+          const att: Record<string, Attachment[]> = {};
+          const srcAtt = json.attachments && typeof json.attachments === "object" ? json.attachments : {};
+          for (const [lineId, list] of Object.entries(srcAtt)) {
+            const arr = Array.isArray(list) ? list : [];
+            att[lineId] = arr.map((a: any) => ({
+              id: String(a?.id ?? ""),
+              fileName: String(a?.fileName ?? "Artwork"),
+              url: (typeof a?.url === "string" ? a.url : null) ?? undefined,
+              cfImageId: (typeof a?.cfImageId === "string" ? a.cfImageId : null) ?? undefined,
+            }));
+          }
+          setAttachmentsByLine(att);
+
+          if (json.selectedShipping) setSelectedShipping(toSelectedShipping(json.selectedShipping));
+          return;
         }
-        setAttachmentsByLine(att);
-
-        // selected shipping
-        if (json.selectedShipping) {
-          setSelectedShipping(toSelectedShipping(json.selectedShipping));
-        }
-        return;
       }
 
-      // 2) Fallback: legacy /api/cart (keeps your old shape working)
+      // 2) Fallback: legacy /api/cart
       const res2 = await fetch("/api/cart", { cache: "no-store" });
-      if (res2.ok) {
-        const j2 = await res2.json();
+      if (!res2.ok) return;
 
-        const itemsShape: AnyItem[] = (j2?.items as AnyItem[]) ?? (j2?.cart?.items as AnyItem[]) ?? [];
+      const j2 = (await res2.json().catch(() => null)) as unknown;
+      if (!j2) return;
 
-        const srvItems: AnyItem[] = (itemsShape || []).map((it) => ({
-          ...it,
-          serverUnitPrice:
+      // Accept: { items: [...] } OR { cart: { items: [...] } }
+      const itemsDirect = getArray(j2, "items");
+      const cartObj = getRecord(j2, "cart");
+      const itemsFromCart = cartObj ? (Array.isArray(cartObj.items) ? (cartObj.items as unknown[]) : null) : null;
+
+      const rawItems = (itemsDirect ?? itemsFromCart ?? []) as unknown[];
+
+      const srvItems: AnyItem[] = rawItems
+        .map((it): AnyItem | null => {
+          if (!isRecord(it)) return null;
+
+          const id = String(it.id ?? "");
+          const productId = Number(it.productId ?? 0);
+
+          if (!id || !Number.isFinite(productId) || productId <= 0) return null;
+
+          const optionIds = Array.isArray(it.optionIds)
+            ? (it.optionIds as unknown[])
+                .map((x) => Number(x))
+                .filter((n) => Number.isFinite(n) && n > 0)
+            : [];
+
+          const quantity = clampQty(Number(it.quantity ?? 1));
+
+          const unitPrice =
             typeof it.serverUnitPrice === "number"
               ? it.serverUnitPrice
               : typeof it.unitPrice === "number"
                 ? it.unitPrice
-                : undefined,
-        }));
+                : undefined;
 
-        setItems(srvItems);
+          return {
+            id,
+            productId,
+            name: typeof it.name === "string" ? it.name : null,
+            optionIds,
+            quantity,
+            cloudflareImageId:
+              typeof it.cloudflareImageId === "string"
+                ? it.cloudflareImageId
+                : typeof it.image === "string"
+                  ? it.image
+                  : null,
+            serverUnitPrice: unitPrice,
+            unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : undefined,
+          };
+        })
+        .filter((x): x is AnyItem => !!x);
 
-        const srvShip: any = j2?.selectedShipping ?? j2?.cart?.selectedShipping ?? j2?.cart?.shipping ?? null;
-        setSelectedShipping(toSelectedShipping(srvShip));
-      }
+      setItems(srvItems);
+
+      // Selected shipping fallback shape
+      const srvShip =
+        getMaybe(j2, "selectedShipping") ??
+        (cartObj ? (cartObj.selectedShipping as unknown) : undefined) ??
+        (cartObj ? (cartObj.shipping as unknown) : undefined) ??
+        null;
+
+      setSelectedShipping(toSelectedShipping(srvShip));
     } catch (e) {
       console.error("refreshFromServer error", e);
     }
@@ -300,7 +371,6 @@ export default function CartPageClient({ initialItems, currency, store, initialS
     }
   }
 
-  // Save locally, remove from cart
   async function saveForLater(line: AnyItem) {
     setBusyId(line.id);
     try {
@@ -351,7 +421,6 @@ export default function CartPageClient({ initialItems, currency, store, initialS
     persistSaved(saved.filter((x) => x.id !== si.id));
   }
 
-  // When the user chooses a rate in the estimator/summary, persist it server-side
   async function onChangeShipping(rate: any) {
     const chosen = toSelectedShipping(rate);
     setSelectedShipping(chosen);
@@ -404,7 +473,6 @@ export default function CartPageClient({ initialItems, currency, store, initialS
                 return (
                   <li key={it.id} className="cart2__row card">
                     <div className="cart2__rowGrid">
-                      {/* thumb: prefers artwork if present */}
                       <div className="cart2__thumb" aria-hidden="true">
                         {thumb.src ? (
                           <img
@@ -419,7 +487,6 @@ export default function CartPageClient({ initialItems, currency, store, initialS
                         )}
                       </div>
 
-                      {/* main */}
                       <div className="minw0">
                         <div className="cart2__name">{displayName}</div>
                         <div className="cart2__each">{unit ? `${money(unit, currency)} each` : "$0.00 each"}</div>
@@ -449,7 +516,6 @@ export default function CartPageClient({ initialItems, currency, store, initialS
                         </button>
                       </div>
 
-                      {/* right */}
                       <div className="cart2__rowRight">
                         <div className="cart2__lineTotal">{money(lineTotal, currency)}</div>
                         <button
@@ -475,8 +541,7 @@ export default function CartPageClient({ initialItems, currency, store, initialS
               <h3 className="m-0">Saved for later</h3>
               <ul className="cart2__list mt-3">
                 {saved.map((si) => {
-                  const img =
-                    cfImgUrl(si.cloudflareImageId, "productCard") || cfImgUrl(si.cloudflareImageId, "public");
+                  const img = cfImgUrl(si.cloudflareImageId, "productCard") || cfImgUrl(si.cloudflareImageId, "public");
 
                   return (
                     <li key={si.id} className="cart2__savedRow">
@@ -522,7 +587,7 @@ export default function CartPageClient({ initialItems, currency, store, initialS
           )}
         </section>
 
-        {/* RIGHT: summary with estimator */}
+        {/* RIGHT: summary */}
         <aside className="cart2__right" aria-label="Order summary">
           <div className="card">
             <CartSummary

@@ -26,7 +26,7 @@ export default function CheckoutPaymentElement({
         headers: { accept: "application/json" },
         cache: "no-store",
       });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as { clientSecret?: unknown };
       if (!res.ok || typeof data?.clientSecret !== "string" || !data.clientSecret) {
         throw new Error("Unable to start checkout right now. Please try again.");
       }
@@ -55,7 +55,7 @@ export default function CheckoutPaymentElement({
         headers: { "content-type": "application/json" },
         cache: "no-store",
       });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as { url?: unknown };
       if (res.ok && typeof data?.url === "string" && data.url) {
         window.location.assign(data.url);
         return;

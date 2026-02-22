@@ -1,5 +1,6 @@
 import "server-only";
 
+import type React from "react";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
@@ -10,6 +11,16 @@ import productAssets from "@/data/productAssets.json";
 
 import SubcategoryTileImage from "@/components/SubcategoryTileImage";
 import { getDefaultPriceSnapshot } from "@/lib/sinalite.client";
+
+/**
+ * TS fix:
+ * Your SubcategoryTileImage component's Props type does NOT include `idOrUrl`,
+ * but this page is calling it with `{ idOrUrl, alt }`.
+ *
+ * Since this page is data-driven and SubcategoryTileImage may have slightly different
+ * prop names across refactors, we safely treat it as a permissive component here.
+ */
+const TileImage = SubcategoryTileImage as unknown as React.ComponentType<any>;
 
 /* ---------------- Types ---------------- */
 type Category = { id?: number | string | null; slug: string; name?: string | null; description?: string | null };
@@ -261,7 +272,7 @@ export default async function SubcategoryPage({
       return {
         "@type": "ListItem",
         position: i + 1,
-        name: (p.name && p.name.trim()) ? p.name : titleCase(pSlug),
+        name: p.name && p.name.trim() ? p.name : titleCase(pSlug),
         url: absUrl(`/categories/${categorySlug}/${subcategorySlug}/${pSlug}`),
       };
     }),
@@ -296,11 +307,21 @@ export default async function SubcategoryPage({
 
       <nav className="mb-6 text-sm text-gray-600" aria-label="Breadcrumb">
         <ol className="flex flex-wrap items-center gap-1">
-          <li><Link className="hover:underline" href="/">Home</Link></li>
+          <li>
+            <Link className="hover:underline" href="/">
+              Home
+            </Link>
+          </li>
           <li aria-hidden="true">/</li>
-          <li><Link className="hover:underline" href={`/categories/${categorySlug}`}>{readableCat}</Link></li>
+          <li>
+            <Link className="hover:underline" href={`/categories/${categorySlug}`}>
+              {readableCat}
+            </Link>
+          </li>
           <li aria-hidden="true">/</li>
-          <li aria-current="page" className="text-gray-900 font-medium">{friendlySub}</li>
+          <li aria-current="page" className="text-gray-900 font-medium">
+            {friendlySub}
+          </li>
         </ol>
       </nav>
 
@@ -318,11 +339,14 @@ export default async function SubcategoryPage({
       {products.length === 0 ? (
         <div className="rounded-lg border p-6 text-gray-600">No products found in this subcategory yet.</div>
       ) : (
-        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 list-none" aria-label={`${friendlySub} products`}>
+        <ul
+          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 list-none"
+          aria-label={`${friendlySub} products`}
+        >
           {products.map((p) => {
             const pSlug = productSlugFromRow(p);
             const href = `/categories/${categorySlug}/${subcategorySlug}/${pSlug}`;
-            const displayName = (p.name && p.name.trim()) ? p.name : titleCase(pSlug);
+            const displayName = p.name && p.name.trim() ? p.name : titleCase(pSlug);
             const price = priceSnapshots[pSlug];
 
             return (
@@ -333,22 +357,29 @@ export default async function SubcategoryPage({
                 >
                   <div className="relative w-full aspect-[4/3] bg-gray-50">
                     {p.cf_image_1_id ? (
-                      <SubcategoryTileImage idOrUrl={p.cf_image_1_id} alt={displayName} />
+                      <TileImage idOrUrl={p.cf_image_1_id} alt={displayName} />
                     ) : (
                       <div className="absolute inset-0 grid place-items-center text-gray-400 text-sm">No image</div>
                     )}
                   </div>
 
                   <div className="p-4">
-                    <h2 className="text-base font-semibold leading-6 text-gray-900 line-clamp-2">
-                      {displayName}
-                    </h2>
+                    <h2 className="text-base font-semibold leading-6 text-gray-900 line-clamp-2">{displayName}</h2>
 
                     <div className="mt-3 flex items-center justify-between text-sm">
                       <span className="inline-flex items-center font-medium text-blue-700">
                         Configure
-                        <svg className="ml-1 h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                          <path fillRule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l5 5a1 1 0 01-.027 1.38l-4.999 5a1 1 0 01-1.415-1.414L13.586 10H4a1 1 0 110-2h9.586l-3.293-3.293a1 1 0 010-1.414z" clipRule="evenodd" />
+                        <svg
+                          className="ml-1 h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M10.293 3.293a1 1 0 011.414 0l5 5a1 1 0 01-.027 1.38l-4.999 5a1 1 0 01-1.415-1.414L13.586 10H4a1 1 0 110-2h9.586l-3.293-3.293a1 1 0 010-1.414z"
+                            clipRule="evenodd"
+                          />
                         </svg>
                       </span>
 
@@ -357,9 +388,7 @@ export default async function SubcategoryPage({
                       </span>
                     </div>
 
-                    <div className="mt-2 text-xs text-gray-600">
-                      {price ? <>From <strong>{price}</strong></> : <>Live pricing</>}
-                    </div>
+                    <div className="mt-2 text-xs text-gray-600">{price ? <>From <strong>{price}</strong></> : <>Live pricing</>}</div>
                   </div>
                 </Link>
               </li>

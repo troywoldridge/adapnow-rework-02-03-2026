@@ -1,10 +1,18 @@
 "use client";
 
-import type React from "react";
+import * as React from "react";
 import Link from "next/link";
 import Image from "@/components/ImageSafe";
 import { useInView } from "react-intersection-observer";
 import type { Category } from "@/types/category";
+
+/**
+ * NOTE:
+ * Your imported `Category` type currently resolves to `unknown` (or includes `unknown`),
+ * which is why TS complains when we access `category.name`, etc.
+ *
+ * Fix: treat incoming data as `unknown`, then narrow with a tiny runtime guard.
+ */
 
 const categoryIconsByName: Record<string, React.ReactNode> = {
   "Business Cards": "💼",
@@ -15,16 +23,55 @@ const categoryIconsByName: Record<string, React.ReactNode> = {
   "Apparel": "👕",
 };
 
-type Props = {
-  category: Category;
+type CategoryLike = {
+  id: string | number;
+  name: string;
+  image?: string | null;
+  slug?: string | null;
 };
 
-function pickCategoryIcon(category: Category): React.ReactNode {
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function toCategoryLike(input: unknown): CategoryLike {
+  const fallback: CategoryLike = { id: "", name: "Category" };
+
+  if (!isRecord(input)) return fallback;
+
+  const idRaw = input.id;
+  const nameRaw = input.name;
+
+  const id =
+    typeof idRaw === "string" || typeof idRaw === "number" ? idRaw : fallback.id;
+
+  const name = typeof nameRaw === "string" && nameRaw.trim() ? nameRaw : fallback.name;
+
+  const imageRaw = input.image;
+  const image =
+    typeof imageRaw === "string"
+      ? imageRaw
+      : imageRaw == null
+        ? null
+        : null;
+
+  const slugRaw = (input as Record<string, unknown>).slug;
+  const slug =
+    typeof slugRaw === "string"
+      ? slugRaw
+      : slugRaw == null
+        ? null
+        : null;
+
+  return { id, name, image, slug };
+}
+
+function pickCategoryIcon(category: CategoryLike): React.ReactNode {
   // Prefer exact name match (your canonical categories), then fall back to slug heuristics.
   const byName = categoryIconsByName[category.name];
   if (byName) return byName;
 
-  const slug = String((category as any)?.slug ?? "").toLowerCase();
+  const slug = String(category.slug ?? "").toLowerCase();
   if (slug.includes("business")) return "💼";
   if (slug.includes("large") || slug.includes("format")) return "🖼️";
   if (slug.includes("station")) return "📝";
@@ -35,18 +82,32 @@ function pickCategoryIcon(category: Category): React.ReactNode {
   return "🖨️";
 }
 
+type Props = {
+  // Keep the external prop typed as Category for compatibility with callers,
+  // but immediately narrow it at runtime to a safe shape.
+  category: Category;
+};
+
 export default function CategoryCard({ category }: Props) {
+  const c = toCategoryLike(category as unknown);
   const { ref, inView } = useInView({ threshold: 0.12, triggerOnce: true });
-  const icon = pickCategoryIcon(category);
+  const icon = pickCategoryIcon(c);
+
+  const hrefId = encodeURIComponent(String(c.id || ""));
+  const href = hrefId ? `/categories/${hrefId}` : "/categories";
 
   return (
-    <li ref={ref} className={`category-card fade-in${inView ? " is-visible" : ""}`} tabIndex={0}>
-      <Link href={`/categories/${category.id}`} className="block focus:outline-none">
+    <li
+      ref={ref}
+      className={`category-card fade-in${inView ? " is-visible" : ""}`}
+      tabIndex={0}
+    >
+      <Link href={href} className="block focus:outline-none">
         <div className="category-card__image-wrap">
-          {category.image ? (
+          {c.image ? (
             <Image
-              src={category.image}
-              alt={category.name}
+              src={c.image}
+              alt={c.name}
               fill
               className="category-card__image"
               unoptimized
@@ -60,7 +121,7 @@ export default function CategoryCard({ category }: Props) {
           <span className="category-card__icon" aria-hidden="true">
             {icon}
           </span>
-          {category.name}
+          {c.name}
         </div>
       </Link>
     </li>

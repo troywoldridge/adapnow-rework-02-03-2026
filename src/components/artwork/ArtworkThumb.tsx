@@ -2,7 +2,13 @@
 "use client";
 
 import Image from "@/components/ImageSafe";
-import { artworkThumbUrl, isPdfMime, r2PublicUrl, safeText } from "@/lib/artwork/r2Public";
+import { r2PublicUrl } from "@/lib/artwork/r2Public";
+
+/** Local safeText fallback if not exported from r2Public */
+function safeText(input?: string | null) {
+  if (!input) return "";
+  return String(input).replace(/\s+/g, " ").trim();
+}
 
 type Props = {
   /** R2 key or absolute URL; may also be blob:/data: before upload */
@@ -14,6 +20,10 @@ type Props = {
 
 function isBlobLike(u: string) {
   return /^blob:|^data:/i.test(u);
+}
+
+function isPdfMime(mime?: string | null) {
+  return /^application\/pdf\b/i.test(mime ?? "");
 }
 
 export default function ArtworkThumb({ publicUrl, mime, filename, className }: Props) {
@@ -55,7 +65,7 @@ export default function ArtworkThumb({ publicUrl, mime, filename, className }: P
     );
   }
 
-  const thumb = artworkThumbUrl(href);
+  const thumb = href;
 
   return (
     <a href={href} target="_blank" rel="noreferrer" title={alt} className={className}>

@@ -1,3 +1,4 @@
+// src/app/api/sinalite/price/route.ts
 import "server-only";
 
 import crypto from "node:crypto";
@@ -10,12 +11,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+const NumOrStr = z.union([z.number(), z.string()]);
+const NumOrStrArr = z.array(NumOrStr);
+const NumOrStrRecord = z.record(z.string(), NumOrStr); // ✅ Zod v4 requires keyType + valueType
+
 const BodySchema = z
   .object({
-    productId: z.union([z.number(), z.string()]),
-    optionIds: z.array(z.union([z.number(), z.string()])).optional(),
-    productOptions: z.union([z.array(z.union([z.number(), z.string()])), z.record(z.union([z.number(), z.string()]))]).optional(),
-    quantity: z.union([z.number(), z.string()]).optional(),
+    productId: NumOrStr,
+    optionIds: NumOrStrArr.optional(),
+    productOptions: z.union([NumOrStrArr, NumOrStrRecord]).optional(),
+    quantity: NumOrStr.optional(),
     store: z.union([z.literal("US"), z.literal("CA")]).optional(),
   })
   .passthrough();
@@ -43,7 +48,8 @@ function noStoreJson(req: NextRequest, body: unknown, status = 200) {
 }
 
 function toInt(value: unknown, fallback: number, min: number, max: number): number {
-  const n = typeof value === "string" ? Number(value) : typeof value === "number" ? value : NaN;
+  const n =
+    typeof value === "string" ? Number(value) : typeof value === "number" ? value : NaN;
   if (!Number.isFinite(n)) return fallback;
   const x = Math.trunc(n);
   return Math.max(min, Math.min(max, x));
@@ -52,9 +58,12 @@ function toInt(value: unknown, fallback: number, min: number, max: number): numb
 function extractOptionIds(body: z.infer<typeof BodySchema>): number[] {
   const fromOptionIds = Array.isArray(body.optionIds) ? body.optionIds : null;
   const fromOptionsArray = Array.isArray(body.productOptions) ? body.productOptions : null;
+
   const fromOptionsObject =
-    body.productOptions && typeof body.productOptions === "object" && !Array.isArray(body.productOptions)
-      ? Object.values(body.productOptions)
+    body.productOptions &&
+    typeof body.productOptions === "object" &&
+    !Array.isArray(body.productOptions)
+      ? Object.values(body.productOptions as Record<string, unknown>)
       : null;
 
   const src = fromOptionIds ?? fromOptionsArray ?? fromOptionsObject ?? [];
@@ -62,7 +71,12 @@ function extractOptionIds(body: z.infer<typeof BodySchema>): number[] {
   const seen = new Set<number>();
 
   for (const candidate of src) {
-    const n = typeof candidate === "string" ? Number(candidate) : typeof candidate === "number" ? candidate : NaN;
+    const n =
+      typeof candidate === "string"
+        ? Number(candidate)
+        : typeof candidate === "number"
+          ? candidate
+          : NaN;
     if (!Number.isFinite(n)) continue;
     const id = Math.trunc(n);
     if (id <= 0 || seen.has(id)) continue;
@@ -82,7 +96,9 @@ function extractLinePrice(raw: unknown): number | null {
     node.total,
     node.price,
     node.unitPrice,
-    node.price2 && typeof node.price2 === "object" ? (node.price2 as Record<string, unknown>).price : undefined,
+    node.price2 && typeof node.price2 === "object"
+      ? (node.price2 as Record<string, unknown>).price
+      : undefined,
   ];
 
   for (const value of values) {
@@ -90,13 +106,39 @@ function extractLinePrice(raw: unknown): number | null {
       typeof value === "number"
         ? value
         : typeof value === "string"
-        ? Number(value.replace(/[^\d.]/g, ""))
-        : NaN;
+          ? Number(value.replace(/[^\d.]/g, ""))
+          : NaN;
 
     if (Number.isFinite(n) && n >= 0) return n;
   }
 
   return null;
+}
+
+/**
+ * Adapter to tolerate either getConfiguredPrice signature:
+ * - getConfiguredPrice(productId, optionIds, quantity, store?)
+ * OR
+ * - getConfiguredPrice({ productId, optionIds, quantity, store })
+ */
+async function callConfiguredPrice(args: {
+  productId: number;
+  optionIds: number[];
+  quantity: number;
+  store?: "US" | "CA";
+}): Promise<unknown> {
+  const fn = getConfiguredPrice as unknown as (...a: any[]) => Promise<unknown>;
+
+  try {
+    return await fn({
+      productId: args.productId,
+      optionIds: args.optionIds,
+      quantity: args.quantity,
+      store: args.store,
+    });
+  } catch {
+    return await fn(args.productId, args.optionIds, args.quantity, args.store);
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -113,7 +155,10 @@ export async function POST(req: NextRequest) {
           ok: false as const,
           requestId,
           error: "invalid_body",
-          issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+          issues: parsed.error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+          })),
         },
         400
       );
@@ -131,14 +176,16 @@ export async function POST(req: NextRequest) {
     }
 
     const quantity = toInt(body.quantity, 1, 1, 100000);
-    const priced = await getConfiguredPrice(productId, optionIds, quantity);
+    const {store} = body;
+
+    const priced = await callConfiguredPrice({ productId, optionIds, quantity, store });
     const linePrice = extractLinePrice(priced);
 
     if (linePrice == null) {
       return noStoreJson(req, { ok: false as const, requestId, error: "invalid_vendor_price" }, 502);
     }
 
-    const currency = body.store === "CA" ? "CAD" : "USD";
+    const currency = store === "CA" ? "CAD" : "USD";
     const unitPrice = linePrice / Math.max(1, quantity);
 
     return noStoreJson(req, {

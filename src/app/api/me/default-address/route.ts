@@ -1,45 +1,39 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { NextRequest, NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
+import { auth } from "@clerk/nextjs/server";
 
 import { db } from "@/lib/db";
-import { addresses } from "@/lib/db/schema/addresses"; // adjust path/name to yours
+import { customerAddresses } from "@/lib/db/schema/customerAddresses";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function jsonError(status: number, message: string, extra?: Record<string, unknown>) {
-  return NextResponse.json({ ok: false, error: message, ...(extra ?? {}) }, { status });
+const COOKIE_NAME = "adap_default_address_id";
+
+function noStore(res: NextResponse) {
+  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.headers.set("Pragma", "no-cache");
+  res.headers.set("Expires", "0");
+  return res;
 }
 
-export async function GET() {
-  const { userId } = await auth(); // await required
-  if (!userId) return jsonError(401, "unauthorized");
-
-  try {
-    // Prefer explicit default, scoped to the authed user.
-    const rows = await db
-      .select()
-      .from(addresses)
-      .where(and(eq(addresses.userId, userId), eq(addresses.isDefault, true)));
-
-    const addr = rows[0] ?? null;
-
-    return NextResponse.json({ ok: true, addr });
-  } catch (e: any) {
-    console.error("GET /api/me/default-address failed", e);
-    return jsonError(500, "internal_error", {
-      detail: String(e?.message || e || "Failed to load default address"),
-    });
-  }
+function norm(v: unknown) {
+  return String(v ?? "").trim();
 }
 
-// Guard other methods
-export async function POST() {
-  return jsonError(405, "method_not_allowed");
+export async function GET(req: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) return noStore(NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 }));
+
+  const id = norm(req.cookies.get(COOKIE_NAME)?.value);
+  if (!id) return noStore(NextResponse.json({ ok: true, address: null }, { status: 200 }));
+
+  const row = await db.query.customerAddresses.findFirst({
+    where: and(eq(customerAddresses.id, id), eq(customerAddresses.customerId, userId)),
+  });
+
+  return noStore(NextResponse.json({ ok: true, address: row ?? null }, { status: 200 }));
 }
-export const PUT = POST;
-export const DELETE = POST;
