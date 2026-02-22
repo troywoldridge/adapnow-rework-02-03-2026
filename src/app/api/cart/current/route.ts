@@ -1,12 +1,10 @@
-// src/app/api/cart/current/route.ts
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { logger, withRequestId } from "@/lib/logger";
+import { withRequestId } from "@/lib/logger";
 import { getRequestId } from "@/lib/requestId";
 import { carts, cartLines, cartAttachments } from "@/lib/db/schema";
 
@@ -15,8 +13,6 @@ import { getProductsByIds } from "@/lib/productResolver";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-
-const SID_COOKIE = "sid";
 
 /* =========================================================
    Helpers
@@ -28,10 +24,8 @@ function noStore(res: NextResponse) {
   return res;
 }
 
-// Next 14 (sync) + Next 15 (async) cookie helper
-async function getCookieJar() {
-  const maybe = cookies() as any;
-  return typeof maybe?.then === "function" ? await maybe : maybe;
+function getSidFromRequest(req: NextRequest): string {
+  return req.cookies.get("sid")?.value ?? req.cookies.get("adap_sid")?.value ?? "";
 }
 
 function toNum(v: unknown, fallback = 0) {
@@ -120,9 +114,7 @@ export async function GET(req: NextRequest) {
   const log = withRequestId(requestId);
 
   try {
-    const jar = await getCookieJar();
-    const sid = jar.get(SID_COOKIE)?.value ?? "";
-
+    const sid = getSidFromRequest(req);
     if (!sid) {
       return noStore(NextResponse.json(emptyEnvelope("USD"), { status: 200 }));
     }
@@ -167,8 +159,8 @@ export async function GET(req: NextRequest) {
         typeof r.lineTotalCents === "number"
           ? r.lineTotalCents
           : typeof unit === "number"
-          ? unit * qty
-          : null;
+            ? unit * qty
+            : null;
 
       return {
         id: String(r.lineId),
@@ -190,21 +182,18 @@ export async function GET(req: NextRequest) {
       const attRows = await db
         .select({
           id: cartAttachments.id,
-          lineId: cartAttachments.lineId,
+          cartLineId: cartAttachments.cartLineId, // ✅ correct column
           fileName: cartAttachments.fileName,
           url: cartAttachments.url,
           key: cartAttachments.key,
           createdAt: (cartAttachments as any).createdAt,
-          // If you add a CF image id column later, map it here:
           // cfImageId: (cartAttachments as any).cfImageId ?? null,
         })
-        // NOTE: lineId type must match. If your DB stores UUID/text, this is perfect.
-        // If it stores int, you're still okay because your CartPageClient treats ids as strings.
         .from(cartAttachments)
-        .where(inArray(cartAttachments.lineId, lineIds as any));
+        .where(inArray(cartAttachments.cartLineId, lineIds as any)); // ✅ correct column
 
       for (const a of attRows) {
-        const lid = String(a.lineId);
+        const lid = String(a.cartLineId);
         if (!attachmentsByLine[lid]) attachmentsByLine[lid] = [];
         attachmentsByLine[lid].push({
           id: String(a.id),
@@ -218,17 +207,15 @@ export async function GET(req: NextRequest) {
     }
 
     // 4) Selected shipping (if you persist it on carts)
-    const selectedShipping =
-      (openCart as any).selectedShipping ?? (openCart as any).shipping ?? null;
+    const selectedShipping = (openCart as any).selectedShipping ?? (openCart as any).shipping ?? null;
 
-    // 5) Totals (prefer stored totals if you add them later; for now compute from lines)
+    // 5) Totals
     const subtotalCents = lines.reduce((sum, l) => {
       const n = typeof l.lineTotalCents === "number" ? l.lineTotalCents : 0;
       return sum + (Number.isFinite(n) ? n : 0);
     }, 0);
 
-    // 6) Back-compat `items` (server pages / older clients)
-    // optionIds aren’t present in cartLines currently; keep empty for now.
+    // 6) Back-compat `items`
     const items = lines.map((l) => ({
       id: l.id,
       productId: l.productId,
@@ -253,7 +240,6 @@ export async function GET(req: NextRequest) {
       attachments: attachmentsByLine,
       selectedShipping,
 
-      // ✅ back-compat
       items,
 
       currency,
@@ -266,7 +252,6 @@ export async function GET(req: NextRequest) {
     log.error("/api/cart/current GET error", {
       message: e instanceof Error ? e.message : String(e),
     });
-    // Keep API resilient: return an ok envelope with empty cart for client safety.
     return noStore(NextResponse.json(emptyEnvelope("USD"), { status: 200 }));
   }
 }

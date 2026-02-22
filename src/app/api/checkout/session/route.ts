@@ -1,6 +1,6 @@
-// src/app/api/checkout/session/route.ts
 import "server-only";
 
+import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { z } from "zod";
@@ -12,24 +12,14 @@ export const revalidate = 0;
 /**
  * /api/checkout/session
  *
- * Future-proof goals:
- * - Never read STRIPE_SECRET_KEY at module top-level (prevents Next build failures).
- * - Strict request validation (Zod) with friendly error envelopes.
- * - Stable response shape: { ok, requestId, ... }
- * - Safe defaults for success/cancel URLs using req.nextUrl.origin.
- *
- * This route creates a Stripe Checkout Session.
- * If your app uses PaymentIntents directly, keep using /api/create-payment-intent instead.
+ * Creates a Stripe Checkout Session.
+ * (If you use PaymentIntents directly, keep using /api/create-payment-intent instead.)
  */
 
 function getRequestId(req: NextRequest): string {
   const existing = req.headers.get("x-request-id");
   if (existing && existing.trim()) return existing.trim();
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `rid_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  }
+  return crypto.randomUUID();
 }
 
 function getStripeSecret(): string | null {
@@ -48,7 +38,9 @@ function stripeClient(): Stripe {
     // Throw ONLY when invoked at runtime (not import-time).
     throw new Error("Missing STRIPE_SECRET_KEY (or STRIPE_API_KEY).");
   }
-  return new Stripe(secret, { apiVersion: "2025-07-30.basil" });
+
+  // ✅ Must match Stripe's exported ApiVersion union in your installed stripe typings.
+  return new Stripe(secret, { apiVersion: "2026-01-28.clover" });
 }
 
 // Accept either Stripe "price" reference, or "price_data" object
@@ -67,6 +59,7 @@ const LineItemSchema = z
             name: z.string().trim().min(1).max(200),
             description: z.string().trim().max(5000).optional(),
             images: z.array(z.string().url()).max(8).optional(),
+            // Stripe expects string metadata on product_data; keep strict
             metadata: z.record(z.string(), z.string()).optional(),
           })
           .strict(),
@@ -92,6 +85,8 @@ const LineItemSchema = z
     path: ["price"],
   });
 
+const MetadataValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
 const BodySchema = z
   .object({
     successUrl: z.string().url().optional(),
@@ -103,10 +98,10 @@ const BodySchema = z
     customerEmail: z.string().email().optional(),
     clientReferenceId: z.string().trim().max(200).optional(),
 
-    // Metadata is string:string in Stripe; allow unknown and coerce later safely
-    metadata: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+    // ✅ Zod v4: z.record(keyType, valueType)
+    // Keep values limited to primitives Stripe can accept after coercion.
+    metadata: z.record(z.string(), MetadataValueSchema).optional(),
 
-    // Optional: pass-through flags
     allowPromotionCodes: z.boolean().optional(),
     locale: z
       .enum([
@@ -161,20 +156,19 @@ function coerceStripeMetadata(
   if (!input) return undefined;
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(input)) {
-    if (!k || !k.trim()) continue;
+    const key = (k || "").trim();
+    if (!key) continue;
     if (v === null || typeof v === "undefined") continue;
-    out[k] = typeof v === "string" ? v : String(v);
+    out[key] = typeof v === "string" ? v : String(v);
   }
   return Object.keys(out).length ? out : undefined;
 }
 
 function stripeErrorToStatus(err: unknown): number {
-  // Stripe's SDK throws StripeError subclasses; keep it simple and safe.
   if (err && typeof err === "object") {
     const anyErr = err as any;
     const type = String(anyErr.type || "");
     const code = String(anyErr.code || "");
-    // Typical client-ish errors
     if (type.includes("StripeInvalidRequestError")) return 400;
     if (code === "parameter_invalid_integer") return 400;
     if (code === "parameter_missing") return 400;
@@ -210,25 +204,18 @@ export async function POST(req: NextRequest) {
     const body = parsed.data;
 
     const origin = req.nextUrl.origin;
-    const success_url =
-      body.successUrl || `${origin}/checkout/success`;
-    const cancel_url =
-      body.cancelUrl || `${origin}/cart`;
+    const success_url = body.successUrl || `${origin}/checkout/success`;
+    const cancel_url = body.cancelUrl || `${origin}/cart`;
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-
       line_items: body.lineItems as Stripe.Checkout.SessionCreateParams.LineItem[],
-
       success_url,
       cancel_url,
-
       customer_email: body.customerEmail,
       client_reference_id: body.clientReferenceId,
-
       allow_promotion_codes: body.allowPromotionCodes,
       locale: body.locale,
-
       metadata: coerceStripeMetadata(body.metadata),
     });
 
@@ -250,7 +237,6 @@ export async function POST(req: NextRequest) {
 
     const status = missingSecret ? 500 : stripeErrorToStatus(err);
 
-    // Keep a stable envelope for callers
     return NextResponse.json(
       {
         ok: false as const,

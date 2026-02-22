@@ -1,7 +1,6 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { NextRequest, NextResponse } from "next/server";
 import { and, eq, ne, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
@@ -12,9 +11,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function getSidFromCookies(): string {
-  const jar = cookies();
-  return jar.get("sid")?.value ?? jar.get("adap_sid")?.value ?? "";
+function getSidFromRequest(req: NextRequest): string {
+  return req.cookies.get("sid")?.value ?? req.cookies.get("adap_sid")?.value ?? "";
 }
 
 async function getOpenCartBySid(sid: string) {
@@ -39,9 +37,11 @@ async function sumCreditsCents(cartId: string): Promise<number> {
   return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const sid = getSidFromCookies();
+    const sid = getSidFromRequest(req);
+
+    // If no sid, treat as "no cart yet" (ok=true, 0 credits)
     if (!sid) {
       return NextResponse.json({ ok: true, cartId: null, creditsCents: 0 }, { status: 200 });
     }
@@ -60,9 +60,6 @@ export async function GET() {
       currency: (cart.currency as "USD" | "CAD") ?? "USD",
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Unknown error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
   }
 }

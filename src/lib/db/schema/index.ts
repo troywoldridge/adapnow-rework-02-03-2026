@@ -1,7 +1,7 @@
 export * from "./types";
 export * from "./enums";
 
-export * from "./addresses";
+export * from "./customerAddresses";
 
 export * from "./cart";
 export * from "./cartLines";

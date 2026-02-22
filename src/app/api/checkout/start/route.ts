@@ -110,7 +110,7 @@ function getStripeSecret(): string | null {
 function stripeClient(): Stripe {
   const secret = getStripeSecret();
   if (!secret) throw new Error("Missing STRIPE_SECRET_KEY (or STRIPE_API_KEY).");
-  return new Stripe(secret, { apiVersion: "2025-07-30.basil" });
+  return new Stripe(secret, { apiVersion: "2026-01-28.clover" });
 }
 
 function toNum(v: unknown): number | null {

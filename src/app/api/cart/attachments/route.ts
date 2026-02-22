@@ -1,11 +1,9 @@
-// src/app/api/cart/attachments/route.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import "server-only";
 
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db";
@@ -29,18 +27,17 @@ export const revalidate = 0;
  *
  * Body:
  * {
- *   productId: number,
+ *   productId: number, // accepted for compatibility (NOT stored in cart_attachments by this route)
  *   cartLines: [{ id?: string, lineId?: string }],
  *   parts: ClientPart[]
  * }
  *
- * Safety / future-proofing:
+ * Guarantees:
  * - no-store + requestId
  * - robust parsing + normalization
  * - verifies cart ownership by sid cookie
  * - verifies line belongs to cart
- * - de-dupes by unique target [lineId, key] (DB index required)
- * - DOES NOT create carts/lines (should already exist)
+ * - de-dupes by unique target [cartLineId, key] (DB index required)
  */
 
 function jsonNoStore(req: NextRequest, body: any, status = 200) {
@@ -63,14 +60,8 @@ const COOKIE_OPTS = {
   maxAge: 60 * 60 * 24 * 30,
 };
 
-async function getJar() {
-  const maybe = cookies() as any;
-  return typeof maybe?.then === "function" ? await maybe : maybe;
-}
-
-async function readSid(): Promise<string | undefined> {
-  const jar = await getJar();
-  return jar?.get?.("adap_sid")?.value ?? jar?.get?.("sid")?.value;
+function getSidFromRequest(req: NextRequest): string {
+  return req.cookies.get("adap_sid")?.value ?? req.cookies.get("sid")?.value ?? "";
 }
 
 function setSid(res: NextResponse, sid: string) {
@@ -86,13 +77,12 @@ function isNonEmptyString(v: unknown): v is string {
 const R2_PUBLIC_BASEURL =
   (process.env.R2_PUBLIC_BASEURL ?? process.env.R2_PUBLIC_BASE_URL ?? "").trim();
 
-/** From storageId (url or key) → { key, url } aligned to Cloudflare CDN delivery. */
+/** From storageId (url or key) → { key, url } aligned to CDN delivery. */
 function fromStorageId(storageIdRaw: string) {
   const storageId = storageIdRaw.trim();
   const looksLikeUrl = /^https?:\/\//i.test(storageId);
 
   if (looksLikeUrl) {
-    // If base is known and url is under it, key = path relative to base path
     if (R2_PUBLIC_BASEURL) {
       try {
         const base = R2_PUBLIC_BASEURL.endsWith("/") ? R2_PUBLIC_BASEURL : `${R2_PUBLIC_BASEURL}/`;
@@ -107,7 +97,6 @@ function fromStorageId(storageIdRaw: string) {
       }
     }
 
-    // Fallback: key = url pathname (no leading slash)
     try {
       const u = new URL(storageId);
       const key = u.pathname.replace(/^\/+/, "");
@@ -117,9 +106,12 @@ function fromStorageId(storageIdRaw: string) {
     }
   }
 
-  // It's a key
   const key = storageId.replace(/^\/+/, "");
-  const base = R2_PUBLIC_BASEURL ? (R2_PUBLIC_BASEURL.endsWith("/") ? R2_PUBLIC_BASEURL : `${R2_PUBLIC_BASEURL}/`) : "";
+  const base = R2_PUBLIC_BASEURL
+    ? R2_PUBLIC_BASEURL.endsWith("/")
+      ? R2_PUBLIC_BASEURL
+      : `${R2_PUBLIC_BASEURL}/`
+    : "";
   const url = base ? new URL(key, base).toString() : "";
   return { key, url };
 }
@@ -168,6 +160,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // productId is accepted for compatibility, but NOT written to cart_attachments in this route.
     const productId = Number(parsed.data.productId);
     if (!Number.isFinite(productId) || productId <= 0) {
       return jsonNoStore(req, { ok: false, requestId: rid, error: "productId is required (number)" }, 400);
@@ -194,8 +187,8 @@ export async function POST(req: NextRequest) {
           typeof p?.url === "string"
             ? p.url.trim()
             : typeof p?.publicUrl === "string"
-            ? p.publicUrl.trim()
-            : "";
+              ? p.publicUrl.trim()
+              : "";
 
         let key = directKey || "";
         let url = directUrl || "";
@@ -208,7 +201,6 @@ export async function POST(req: NextRequest) {
 
         if (!key) return null;
 
-        // If url missing but we have R2 base, construct it
         if (!url && R2_PUBLIC_BASEURL) {
           const base = R2_PUBLIC_BASEURL.endsWith("/") ? R2_PUBLIC_BASEURL : `${R2_PUBLIC_BASEURL}/`;
           url = new URL(key.replace(/^\/+/, ""), base).toString();
@@ -228,12 +220,14 @@ export async function POST(req: NextRequest) {
     }
 
     // Ensure session & open cart
-    let sid = await readSid();
+    let sid = getSidFromRequest(req);
     if (!sid) sid = crypto.randomUUID();
 
-    const cart = await db.query.carts.findFirst({
-      where: and(eq(carts.sid, sid), eq(carts.status, "open")),
-    });
+    const [cart] = await db
+      .select({ id: carts.id })
+      .from(carts)
+      .where(and(eq(carts.sid, sid), eq(carts.status, "open")))
+      .limit(1);
 
     if (!cart) {
       const res = jsonNoStore(req, { ok: false, requestId: rid, error: "cart_not_found" }, 404);
@@ -242,55 +236,52 @@ export async function POST(req: NextRequest) {
     }
 
     // Verify all provided lines belong to this cart
-    const existingLines = await db.query.cartLines.findMany({
-      where: and(eq(cartLines.cartId, cart.id), inArray(cartLines.id, lineIds)),
-      columns: { id: true },
-    });
+    const existingLines = await db
+      .select({ id: cartLines.id })
+      .from(cartLines)
+      .where(and(eq(cartLines.cartId, cart.id), inArray(cartLines.id, lineIds)));
 
-    const okSet = new Set(existingLines.map((r: any) => String(r.id)));
+    const okSet = new Set(existingLines.map((r) => String(r.id)));
     const missing = lineIds.filter((id) => !okSet.has(String(id)));
 
     if (missing.length) {
-      return jsonNoStore(
+      const res = jsonNoStore(
         req,
         { ok: false, requestId: rid, error: `line(s) not found in this cart: ${missing.join(", ")}` },
         404
       );
+      setSid(res, sid);
+      return res;
     }
 
     // Attach to the FIRST line (matches current UI flow)
-    const targetLineId = lineIds[0];
+    const targetCartLineId = lineIds[0];
 
-    // De-dupe by (lineId, key) in-process (DB also enforces via unique index)
+    // De-dupe by (cartLineId, key) in-process (DB also enforces via unique index)
     const seen = new Set<string>();
-    const now = new Date();
 
+    // IMPORTANT: only include columns that exist on cart_attachments.
+    // From your Drizzle typings, required: cartLineId, key, url. Optional: fileName, kind, contentType, meta, etc.
     const rows = normalizedParts
       .map((p) => {
-        const dedupeKey = `${targetLineId}::${p.key}`;
+        const dedupeKey = `${targetCartLineId}::${p.key}`;
         if (seen.has(dedupeKey)) return null;
         seen.add(dedupeKey);
 
         return {
-          cartId: cart.id,
-          lineId: targetLineId,
-          productId,
-          fileName: p.fileName,
+          cartLineId: targetCartLineId,
           key: p.key,
           url: p.url,
-          createdAt: now,
-          updatedAt: now,
+          // Drizzle typing indicates optional (undefined ok) not nullable (null not ok)
+// sourcery skip: simplify-ternary
+          fileName: p.fileName ? p.fileName : undefined,
         };
       })
       .filter(Boolean) as Array<{
-      cartId: string;
-      lineId: string;
-      productId: number;
-      fileName: string;
+      cartLineId: string;
       key: string;
       url: string;
-      createdAt: Date;
-      updatedAt: Date;
+      fileName?: string;
     }>;
 
     if (rows.length === 0) {
@@ -299,25 +290,13 @@ export async function POST(req: NextRequest) {
       return res;
     }
 
-    // Insert and ignore conflicts on unique (lineId, key)
     const inserted = await db
       .insert(cartAttachments)
       .values(rows)
       .onConflictDoNothing({
-        target: [cartAttachments.lineId, cartAttachments.key],
+        target: [cartAttachments.cartLineId, cartAttachments.key],
       })
       .returning({ id: cartAttachments.id });
-
-    // Optional hygiene (safe, but keep light):
-    // If you trust the unique constraint, you can remove this cleanup query.
-    await db.execute(sql`
-      WITH ranked AS (
-        SELECT id, ROW_NUMBER() OVER (PARTITION BY line_id, key ORDER BY id) AS rn
-        FROM cart_attachments
-      )
-      DELETE FROM cart_attachments
-      WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
-    `);
 
     const res = jsonNoStore(
       req,

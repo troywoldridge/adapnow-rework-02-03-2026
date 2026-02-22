@@ -1,15 +1,13 @@
-// src/app/api/cart/lines/route.ts
 import "server-only";
 
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { and, eq } from "drizzle-orm";
 
 import { getDb } from "@/lib/db";
 import { jsonError, getRequestId } from "@/lib/apiError";
 import { withRequestId } from "@/lib/logger";
-import { carts, cartLines, cartAttachments, artworkStaged } from "@/lib/db/schema";
+import { carts, cartLines, cartAttachments } from "@/lib/db/schema";
 import { computePrice } from "@/lib/price/compute";
 
 export const runtime = "nodejs";
@@ -29,12 +27,6 @@ function noStore(res: NextResponse) {
   return res;
 }
 
-// Next 14 (sync) + Next 15 (async)
-async function getJar() {
-  const maybe = cookies() as any;
-  return typeof maybe?.then === "function" ? await maybe : maybe;
-}
-
 function norm(v: unknown) {
   return String(v ?? "").trim();
 }
@@ -50,172 +42,199 @@ function toOptionIds(v: unknown): number[] {
   return v.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
 }
 
+function setSidCookies(res: NextResponse, sid: string) {
+  res.cookies.set("adap_sid", sid, COOKIE_OPTS);
+  res.cookies.set("sid", sid, COOKIE_OPTS);
+}
+
+/** Always returns a real string (never undefined). */
+function cookieString(req: NextRequest, name: string): string {
+  const c = req.cookies.get(name);
+  const v = c && typeof (c as any).value === "string" ? String((c as any).value) : "";
+  return v.trim();
+}
+
+type AttachmentInput = {
+  key?: unknown;
+  storageId?: unknown;
+  url?: unknown;
+  fileName?: unknown;
+};
+
+function toAttachmentInputs(v: unknown): Array<{ key: string; url: string; fileName?: string }> {
+  if (!Array.isArray(v)) return [];
+  const out: Array<{ key: string; url: string; fileName?: string }> = [];
+
+  for (const item of v) {
+    const it = item as AttachmentInput;
+    const key = norm(it.storageId ?? it.key);
+    const url = norm(it.url);
+    const fileName = norm(it.fileName);
+    if (!key || !url) continue;
+    out.push({ key, url, fileName: fileName || undefined });
+  }
+
+  return out;
+}
+
+/**
+ * POST /api/cart/lines
+ */
 export async function POST(req: NextRequest) {
-  const requestId = getRequestId(req);
+  // ✅ Force requestId to ALWAYS be a string (fixes TS2345 at withRequestId)
+  const requestId: string =
+    (getRequestId(req) as string | undefined) ??
+    req.headers.get("x-request-id") ??
+    crypto.randomUUID();
+
   const log = withRequestId(requestId);
   const db = getDb();
 
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
-  const productId = Number(body?.productId);
-  const quantity = Math.max(1, Number(body?.quantity ?? body?.qty ?? 1) || 1);
-  const store: "US" | "CA" = body?.store === "CA" ? "CA" : "US";
-  const optionIds = toOptionIds(body?.optionIds);
+    const productId = Number(body?.productId);
+    const quantity = Math.max(1, Number(body?.quantity ?? body?.qty ?? 1) || 1);
+    const store: "US" | "CA" = body?.store === "CA" ? "CA" : "US";
+    const optionIds = toOptionIds(body?.optionIds);
+    const attachmentsIn = toAttachmentInputs(body?.attachments);
 
-  // Optional draftId (ties pre-cart artwork uploads to this line)
-  const draftId = norm(body?.draftId) || undefined;
-
-  if (!Number.isFinite(productId) || productId <= 0) {
-    return noStore(jsonError(400, "Invalid productId", { code: "invalid_productId", requestId }));
-  }
-
-  // Pricing/cart logic expects options
-  if (optionIds.length === 0) {
-    return noStore(jsonError(400, "optionIds required", { code: "missing_optionIds", requestId }));
-  }
-
-  // ✅ Compute server-authoritative pricing
-  const priced = await computePrice({ productId, store, quantity, optionIds });
-
-  // Get/choose SID
-  const jar = await getJar();
-  const cookieA = (jar.get?.("adap_sid")?.value ?? undefined) as string | undefined;
-  const cookieB = (jar.get?.("sid")?.value ?? undefined) as string | undefined;
-
-  const candidates: string[] = [cookieA, cookieB].filter(
-    (v): v is string => typeof v === "string" && v.length > 0
-  );
-
-  // Prefer existing open cart for a candidate SID
-  let openCartSid: string | undefined;
-  for (const candidate of candidates) {
-    const c = await db.query.carts.findFirst({
-      where: and(eq(carts.sid, candidate), eq(carts.status, "open")),
-      columns: { id: true },
-    });
-    if (c) {
-      openCartSid = candidate;
-      break;
+    if (!Number.isFinite(productId) || productId <= 0) {
+      return noStore(jsonError(400, "Invalid productId", { code: "invalid_productId", requestId }));
     }
-  }
 
-  const sid: string = openCartSid ?? cookieA ?? cookieB ?? crypto.randomUUID();
+    if (optionIds.length === 0) {
+      return noStore(jsonError(400, "optionIds required", { code: "missing_optionIds", requestId }));
+    }
 
-  // Find or create cart (persist currency)
-  let cart = await db.query.carts.findFirst({
-    where: and(eq(carts.sid, sid), eq(carts.status, "open")),
-  });
+    // ✅ server-authoritative pricing
+    const priced = await computePrice({ productId, store, quantity, optionIds });
 
-  if (!cart) {
-    const [created] = await db
-      .insert(carts)
-      .values({ sid, status: "open", currency: priced.currency })
-      .returning();
-    cart = created;
-  } else if (!cart.currency) {
-    await db.update(carts).set({ currency: priced.currency }).where(eq(carts.id, cart.id));
-  }
+    // ✅ cookie values are guaranteed strings
+    const cookieA: string = cookieString(req, "adap_sid");
+    const cookieB: string = cookieString(req, "sid");
 
-  // Merge behavior (same productId + optionIds → bump quantity)
-  const existing = await db
-    .select()
-    .from(cartLines)
-    .where(and(eq(cartLines.cartId, cart.id), eq(cartLines.productId, Number(productId))));
+    // Prefer existing open cart for cookieA/cookieB
+    let openCartSid: string = "";
 
-  const match = existing.find((l) => sameArray((l as any).optionIds ?? [], optionIds));
+    if (cookieA) {
+      const found = await db.query.carts.findFirst({
+        where: and(eq(carts.sid, cookieA), eq(carts.status, "open")),
+        columns: { id: true },
+      });
+      if (found) openCartSid = cookieA;
+    }
 
-  let line: typeof cartLines.$inferSelect;
-  let merged = false;
+    if (!openCartSid && cookieB && cookieB !== cookieA) {
+      const found = await db.query.carts.findFirst({
+        where: and(eq(carts.sid, cookieB), eq(carts.status, "open")),
+        columns: { id: true },
+      });
+      if (found) openCartSid = cookieB;
+    }
 
-  if (match) {
-    merged = true;
+    // ✅ Build sid with explicit steps => sid is ALWAYS type string
+    let sid: string = "";
+    if (openCartSid) sid = openCartSid;
+    if (!sid && cookieA) sid = cookieA;
+    if (!sid && cookieB) sid = cookieB;
+    if (!sid) sid = crypto.randomUUID();
 
-    const prevQty = Number((match as any).quantity ?? 0);
-    const newQty = Math.max(1, prevQty + quantity);
+    // Find or create cart
+    let cart = await db.query.carts.findFirst({
+      where: and(eq(carts.sid, sid), eq(carts.status, "open")),
+    });
 
-    const [updated] = await db
-      .update(cartLines)
-      .set({
-        quantity: newQty,
-        currency: priced.currency,
-        unitPriceCents: priced.unitSellCents,
-        lineTotalCents: priced.unitSellCents * newQty,
-        updatedAt: new Date(),
-      })
-      .where(eq(cartLines.id, (match as any).id))
-      .returning();
+    if (!cart) {
+      const [created] = await db
+        .insert(carts)
+        .values({ sid, status: "open", currency: priced.currency })
+        .returning();
+      cart = created;
+    } else if (!cart.currency) {
+      await db.update(carts).set({ currency: priced.currency }).where(eq(carts.id, cart.id));
+    }
 
-    line = updated;
-  } else {
-    const [inserted] = await db
-      .insert(cartLines)
-      .values({
-        cartId: cart.id,
-        productId: Number(productId),
-        quantity,
-        optionIds: optionIds as any,
-        currency: priced.currency,
-        unitPriceCents: priced.unitSellCents,
-        lineTotalCents: priced.unitSellCents * quantity,
-        artwork: {},
-      })
-      .returning();
-
-    line = inserted;
-  }
-
-  // ✅ Attach staged uploads (upload-before-cart flow)
-  // - only if draftId provided
-  // - dedupe via unique(line_id, key) using onConflictDoNothing
-  if (draftId) {
-    const staged = await db
+    // Merge behavior (same productId + optionIds → bump quantity)
+    const existing = await db
       .select()
-      .from(artworkStaged)
-      .where(and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)));
+      .from(cartLines)
+      .where(and(eq(cartLines.cartId, cart.id), eq(cartLines.productId, productId)));
 
-    if (staged.length > 0) {
-      for (const s of staged) {
-        const key = norm((s as any).key);
-        const url = norm((s as any).url);
-        const fileName = norm((s as any).fileName) || "artwork";
+    const match = existing.find((l) => sameArray((l as any).optionIds ?? [], optionIds));
 
-        if (!key || !url) continue;
+    let line: typeof cartLines.$inferSelect;
+    let merged = false;
 
+    if (match) {
+      merged = true;
+
+      const prevQty = Number((match as any).quantity ?? 0);
+      const newQty = Math.max(1, prevQty + quantity);
+
+      const [updated] = await db
+        .update(cartLines)
+        .set({
+          quantity: newQty,
+          currency: priced.currency,
+          unitPriceCents: priced.unitSellCents,
+          lineTotalCents: priced.unitSellCents * newQty,
+          updatedAt: new Date(),
+        })
+        .where(eq(cartLines.id, (match as any).id))
+        .returning();
+
+      line = updated;
+    } else {
+      const [inserted] = await db
+        .insert(cartLines)
+        .values({
+          cartId: cart.id,
+          productId,
+          quantity,
+          optionIds: optionIds as any,
+          currency: priced.currency,
+          unitPriceCents: priced.unitSellCents,
+          lineTotalCents: priced.unitSellCents * quantity,
+          artwork: {},
+        })
+        .returning();
+
+      line = inserted;
+    }
+
+    // ✅ Attach provided attachments (schema uses cartLineId)
+    if (attachmentsIn.length > 0) {
+      const cartLineId = String((line as any).id);
+
+      for (const att of attachmentsIn) {
         await db
           .insert(cartAttachments)
           .values({
-            lineId: line.id,
-            productId: Number(productId),
-            fileName,
-            key,
-            url,
+            cartLineId,
+            key: att.key,
+            url: att.url,
+            fileName: att.fileName || undefined,
           })
           .onConflictDoNothing({
-            target: [cartAttachments.lineId, cartAttachments.key],
+            target: [cartAttachments.cartLineId, cartAttachments.key],
           });
       }
-
-      // Clear staged uploads for this draft
-      await db
-        .delete(artworkStaged)
-        .where(and(eq(artworkStaged.sid, sid), eq(artworkStaged.draftId, draftId)));
     }
-  }
 
-  // Response + cookies
-  const res = NextResponse.json({
-    ok: true,
-    merged,
-    cartId: cart.id,
-    lineId: line.id,
-    line,
-  });
+    const res = NextResponse.json(
+      {
+        ok: true,
+        merged,
+        cartId: String((cart as any).id),
+        lineId: String((line as any).id),
+        line,
+      },
+      { status: 200 }
+    );
 
-  res.cookies.set("adap_sid", sid, COOKIE_OPTS);
-  res.cookies.set("sid", sid, COOKIE_OPTS);
-
-  return noStore(res);
+    setSidCookies(res, sid);
+    return noStore(res);
   } catch (e) {
     log.error("/api/cart/lines POST error", {
       message: e instanceof Error ? e.message : String(e),

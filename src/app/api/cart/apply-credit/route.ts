@@ -1,7 +1,6 @@
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { and, eq, ne, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
@@ -13,9 +12,27 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function getSidFromCookies(): string {
-  const jar = cookies();
-  return jar.get("sid")?.value ?? jar.get("adap_sid")?.value ?? "";
+type ApplyCreditBody = {
+  creditsCents?: unknown;
+  amountCents?: unknown;
+  cents?: unknown;
+};
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function parseApplyCreditBody(v: unknown): ApplyCreditBody {
+  if (!isRecord(v)) return {};
+  return {
+    creditsCents: v["creditsCents"],
+    amountCents: v["amountCents"],
+    cents: v["cents"],
+  };
+}
+
+function getSidFromRequest(req: NextRequest): string {
+  return req.cookies.get("sid")?.value ?? req.cookies.get("adap_sid")?.value ?? "";
 }
 
 function toInt(v: unknown, fallback = 0): number {
@@ -69,7 +86,9 @@ async function subtotalCentsForCart(cartId: string): Promise<number> {
 
 async function replaceLoyaltyCredit(cartId: string, amountCents: number) {
   // Make it deterministic: one row for reason='loyalty'
-  await db.delete(cartCredits).where(and(eq(cartCredits.cartId, cartId), eq(cartCredits.reason, "loyalty")));
+  await db
+    .delete(cartCredits)
+    .where(and(eq(cartCredits.cartId, cartId), eq(cartCredits.reason, "loyalty")));
 
   if (amountCents > 0) {
     await db.insert(cartCredits).values({
@@ -93,14 +112,17 @@ async function replaceLoyaltyCredit(cartId: string, amountCents: number) {
 
 export async function POST(req: NextRequest) {
   try {
-    const sid = getSidFromCookies();
+    const sid = getSidFromRequest(req);
     if (!sid) return NextResponse.json({ ok: false, error: "No session/cart." }, { status: 400 });
 
     const cart = await getOpenCartBySid(sid);
     if (!cart) return NextResponse.json({ ok: false, error: "Cart not found." }, { status: 404 });
 
-    const body = await req.json().catch(() => ({} as any));
-    const requestedCents = Math.max(0, toInt(body?.creditsCents ?? body?.amountCents ?? body?.cents ?? 0, 0));
+    const raw: unknown = await req.json().catch(() => ({}));
+    const body = parseApplyCreditBody(raw);
+
+    const requestedRaw = body.creditsCents ?? body.amountCents ?? body.cents ?? 0;
+    const requestedCents = Math.max(0, toInt(requestedRaw, 0));
 
     const subtotalCents = await subtotalCentsForCart(cart.id);
     const shippingCents = shippingCentsFromSelectedShipping(cart.selectedShipping);
@@ -122,9 +144,6 @@ export async function POST(req: NextRequest) {
       currency: (cart.currency as "USD" | "CAD") ?? "USD",
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || "Unknown error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
   }
 }

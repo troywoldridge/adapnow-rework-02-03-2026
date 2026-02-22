@@ -1,195 +1,210 @@
-// src/app/api/cart/artwork/route.ts
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { carts, cartLines, cartAttachments } from "@/lib/db/schema";
-import { cfUrl } from "@/lib/cf";
+import { carts } from "@/lib/db/schema/cart";
+import { cartLines } from "@/lib/db/schema/cartLines";
+import { cartAttachments } from "@/lib/db/schema/cartAttachments";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function noStore(res: NextResponse) {
-  res.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-  res.headers.set("Pragma", "no-cache");
-  res.headers.set("Expires", "0");
-  return res;
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
 }
 
-// Next 14 (sync) + Next 15 (async)
-async function getJar() {
-  const maybe = cookies() as any;
-  return typeof maybe?.then === "function" ? await maybe : maybe;
+function safeString(v: unknown): string {
+  return typeof v === "string" ? v : "";
 }
 
-async function getSid(): Promise<string> {
-  const jar = await getJar();
-  return jar.get?.("sid")?.value ?? jar.get?.("adap_sid")?.value ?? "";
+function getSidFromRequest(req: NextRequest): string {
+  return req.cookies.get("sid")?.value ?? req.cookies.get("adap_sid")?.value ?? "";
 }
 
-function norm(v: unknown) {
-  return String(v ?? "").trim();
+async function getOpenCartBySid(sid: string) {
+  const [cart] = await db
+    .select({ id: carts.id })
+    .from(carts)
+    .where(and(eq(carts.sid, sid), ne(carts.status, "closed")))
+    .limit(1);
+
+  return cart ?? null;
 }
 
-function safeFileName(input?: string | null, fallbackKey?: string): string {
-  const s = (input ?? "").trim();
-  if (s) return s;
-  const base = (fallbackKey ?? "").split("/").pop() ?? "";
-  return base || "artwork";
+async function ensureLineBelongsToCart(cartId: string, cartLineId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: cartLines.id })
+    .from(cartLines)
+    .where(and(eq(cartLines.id, cartLineId), eq(cartLines.cartId, cartId)))
+    .limit(1);
+
+  return !!row;
 }
 
-function ensureUrlFromKey(key: string): string {
-  return cfUrl(key) ?? key;
+type CreateBody = {
+  // client-friendly
+  lineId?: unknown;
+
+  // db-ish (optional)
+  cartLineId?: unknown;
+
+  key?: unknown;
+  url?: unknown;
+
+  // allow either spelling from client; DB column is fileName
+  filename?: unknown;
+  fileName?: unknown;
+
+  contentType?: unknown;
+  kind?: unknown;
+  meta?: unknown;
+
+  // accepted but NOT stored (your schema doesn't have these)
+  sizeBytes?: unknown;
+  width?: unknown;
+  height?: unknown;
+};
+
+function parseCreateBody(v: unknown): CreateBody {
+  if (!isRecord(v)) return {};
+  return {
+    lineId: v["lineId"],
+    cartLineId: v["cartLineId"],
+    key: v["key"],
+    url: v["url"],
+    filename: v["filename"],
+    fileName: v["fileName"],
+    contentType: v["contentType"],
+    kind: v["kind"],
+    meta: v["meta"],
+    sizeBytes: v["sizeBytes"],
+    width: v["width"],
+    height: v["height"],
+  };
 }
 
 /**
- * GET /api/cart/artwork?lineId=... | ?cartId=...
- * Security: must be the current sid's open cart.
+ * GET:
+ *   /api/cart/artwork?lineId=<uuid>
+ *   Lists attachments for a given cart line (must belong to the open cart for this sid).
  */
 export async function GET(req: NextRequest) {
   try {
-    const sid = await getSid();
-    if (!sid) return noStore(NextResponse.json({ ok: false, error: "no_session" }, { status: 401 }));
+    const sid = getSidFromRequest(req);
+    if (!sid) return NextResponse.json({ ok: false, error: "No session/cart." }, { status: 400 });
 
-    const cart = await db.query.carts.findFirst({
-      where: and(eq(carts.sid, sid), eq(carts.status, "open")),
-      columns: { id: true },
-    });
-    if (!cart) return noStore(NextResponse.json({ ok: true, attachments: [] }, { status: 200 }));
+    const cart = await getOpenCartBySid(sid);
+    if (!cart) return NextResponse.json({ ok: false, error: "Cart not found." }, { status: 404 });
 
-    const { searchParams } = new URL(req.url);
-    const lineId = norm(searchParams.get("lineId"));
-    const cartIdParam = norm(searchParams.get("cartId"));
+    const url = new URL(req.url);
+    const lineId = url.searchParams.get("lineId") || url.searchParams.get("cartLineId") || "";
+    if (!lineId) return NextResponse.json({ ok: false, error: "Missing lineId." }, { status: 400 });
 
-    if (!lineId && !cartIdParam) {
-      return noStore(NextResponse.json({ ok: false, error: "Provide lineId or cartId" }, { status: 400 }));
-    }
+    const owns = await ensureLineBelongsToCart(cart.id, lineId);
+    if (!owns) return NextResponse.json({ ok: false, error: "Line not found." }, { status: 404 });
 
-    // Never trust cartId from client; use sid’s open cart
-    const effectiveCartId = cart.id;
+    const rows = await db
+      .select()
+      .from(cartAttachments)
+      .where(eq(cartAttachments.cartLineId, lineId))
+      .orderBy(desc(cartAttachments.createdAt));
 
-    let rows: any[] = [];
-
-    if (lineId) {
-      const line = await db.query.cartLines.findFirst({
-        where: and(eq(cartLines.id, lineId), eq(cartLines.cartId, effectiveCartId)),
-        columns: { id: true },
-      });
-      if (!line) return noStore(NextResponse.json({ ok: false, error: "line_not_found" }, { status: 404 }));
-
-      rows = await db
-        .select()
-        .from(cartAttachments)
-        .where(eq(cartAttachments.lineId, lineId))
-        .orderBy(desc(cartAttachments.createdAt));
-    } else {
-      const lineRows = await db
-        .select({ id: cartLines.id })
-        .from(cartLines)
-        .where(eq(cartLines.cartId, effectiveCartId));
-
-      const lineIds = lineRows.map((r) => r.id);
-      if (lineIds.length === 0) return noStore(NextResponse.json({ ok: true, attachments: [] }, { status: 200 }));
-
-      rows = await db
-        .select()
-        .from(cartAttachments)
-        .where(inArray(cartAttachments.lineId, lineIds as any))
-        .orderBy(desc(cartAttachments.createdAt));
-    }
-
-    const attachments = rows.map((r: any) => ({
-      id: String(r.id),
-      lineId: String(r.lineId),
-      storageId: String(r.key),
-      url: String(r.url || ensureUrlFromKey(String(r.key))),
-      fileName: String(r.fileName || "artwork"),
-      createdAt: r.createdAt ?? null,
-    }));
-
-    return noStore(NextResponse.json({ ok: true, attachments }, { status: 200 }));
-  } catch (err: any) {
-    console.error("GET /api/cart/artwork failed:", err);
-    return noStore(NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 }));
+    return NextResponse.json({ ok: true, lineId, attachments: rows });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
   }
 }
 
 /**
- * POST /api/cart/artwork
- * Accepts:
- * - { lineId, storageId, fileName? } (original)
- * - { lineId, key, url, fileName? } (new/compat)
+ * POST:
+ *   Body supports { lineId, key, url, ... } OR { cartLineId, ... }.
+ *   Also accepts filename or fileName; DB column is fileName.
  */
 export async function POST(req: NextRequest) {
   try {
-    const sid = await getSid();
-    if (!sid) return noStore(NextResponse.json({ ok: false, error: "no_session" }, { status: 401 }));
+    const sid = getSidFromRequest(req);
+    if (!sid) return NextResponse.json({ ok: false, error: "No session/cart." }, { status: 400 });
 
-    const cart = await db.query.carts.findFirst({
-      where: and(eq(carts.sid, sid), eq(carts.status, "open")),
-      columns: { id: true },
-    });
-    if (!cart) return noStore(NextResponse.json({ ok: false, error: "open_cart_not_found" }, { status: 404 }));
+    const cart = await getOpenCartBySid(sid);
+    if (!cart) return NextResponse.json({ ok: false, error: "Cart not found." }, { status: 404 });
 
-    const body = (await req.json().catch(() => ({}))) as {
-      lineId?: string;
-      storageId?: string;
-      key?: string;
-      url?: string;
-      fileName?: string;
-    };
+    const raw: unknown = await req.json().catch(() => ({}));
+    const body = parseCreateBody(raw);
 
-    const lineId = norm(body.lineId);
-    const key = norm(body.storageId ?? body.key);
-    const url = norm(body.url);
+    const cartLineId = safeString(body.cartLineId ?? body.lineId);
+    const key = safeString(body.key);
+    const url = safeString(body.url);
 
-    if (!lineId || (!key && !url)) {
-      return noStore(
-        NextResponse.json({ ok: false, error: "lineId and (storageId/key or url) required" }, { status: 400 }),
-      );
-    }
+    if (!cartLineId) return NextResponse.json({ ok: false, error: "Missing lineId." }, { status: 400 });
+    if (!key) return NextResponse.json({ ok: false, error: "Missing key." }, { status: 400 });
+    if (!url) return NextResponse.json({ ok: false, error: "Missing url." }, { status: 400 });
 
-    // Ensure line belongs to sid cart
-    const line = await db.query.cartLines.findFirst({
-      where: and(eq(cartLines.id, lineId), eq(cartLines.cartId, cart.id)),
-      columns: { id: true, productId: true },
-    });
-    if (!line) return noStore(NextResponse.json({ ok: false, error: "line_not_found" }, { status: 404 }));
+    const owns = await ensureLineBelongsToCart(cart.id, cartLineId);
+    if (!owns) return NextResponse.json({ ok: false, error: "Line not found." }, { status: 404 });
 
-    const storageId = key || url;
-    const finalUrl = url || ensureUrlFromKey(storageId);
-    const fileName = safeFileName(body.fileName, storageId);
+    const fileNameStr = safeString(body.fileName ?? body.filename);
+    const contentTypeStr = safeString(body.contentType);
+    const kindStr = safeString(body.kind);
 
-    const [row] = await db
+    // IMPORTANT: Drizzle insert type indicates these are optional (undefined OK), not nullable (null NOT OK).
+    const [inserted] = await db
       .insert(cartAttachments)
       .values({
-        lineId,
-        productId: Number(line.productId),
-        fileName,
-        key: storageId,
-        url: finalUrl,
-        // createdAt/updatedAt handled by defaultNow()
+        cartLineId,
+        key,
+        url,
+// sourcery skip: simplify-ternary
+        fileName: fileNameStr ? fileNameStr : undefined,
+        contentType: contentTypeStr ? contentTypeStr : undefined,
+        kind: kindStr ? kindStr : undefined,
+        meta: body.meta ?? undefined,
       })
-      .onConflictDoNothing({
-        target: [cartAttachments.lineId, cartAttachments.key],
+      .returning();
+
+    return NextResponse.json({ ok: true, attachment: inserted });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
+  }
+}
+
+/**
+ * DELETE:
+ *   /api/cart/artwork?id=<attachmentId>
+ *   Deletes an attachment (must belong to a cart line in the open cart).
+ */
+export async function DELETE(req: NextRequest) {
+  try {
+    const sid = getSidFromRequest(req);
+    if (!sid) return NextResponse.json({ ok: false, error: "No session/cart." }, { status: 400 });
+
+    const cart = await getOpenCartBySid(sid);
+    if (!cart) return NextResponse.json({ ok: false, error: "Cart not found." }, { status: 404 });
+
+    const url = new URL(req.url);
+    const id = url.searchParams.get("id") || "";
+    if (!id) return NextResponse.json({ ok: false, error: "Missing id." }, { status: 400 });
+
+    const [att] = await db
+      .select({
+        id: cartAttachments.id,
+        cartLineId: cartAttachments.cartLineId,
       })
-      .returning({ id: cartAttachments.id });
+      .from(cartAttachments)
+      .where(eq(cartAttachments.id, id))
+      .limit(1);
 
-    // If it conflicted, returning() can be empty; still report ok.
-    const id = row?.id ? String(row.id) : null;
+    if (!att) return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
 
-    return noStore(
-      NextResponse.json(
-        { ok: true, attachment: { id, lineId, storageId, url: finalUrl, fileName } },
-        { status: 200 },
-      ),
-    );
-  } catch (err: any) {
-    console.error("POST /api/cart/artwork failed:", err);
-    return noStore(NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 }));
+    const owns = await ensureLineBelongsToCart(cart.id, att.cartLineId);
+    if (!owns) return NextResponse.json({ ok: false, error: "Not found." }, { status: 404 });
+
+    await db.delete(cartAttachments).where(eq(cartAttachments.id, id));
+
+    return NextResponse.json({ ok: true, deletedId: id });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
   }
 }

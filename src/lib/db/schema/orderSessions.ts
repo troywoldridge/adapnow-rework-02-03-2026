@@ -1,9 +1,6 @@
 // src/lib/db/schema/orderSessions.ts
 // Checkout session state - holds shipping, billing, files, options, and totals before payment.
 // Designed for "draft checkout" flows, Stripe handoff, and post-checkout reconciliation.
-
-import "server-only";
-
 import {
   pgTable,
   uuid,

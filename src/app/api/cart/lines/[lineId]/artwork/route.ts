@@ -1,8 +1,6 @@
-// src/app/api/cart/lines/[lineId]/artwork/route.ts
 import "server-only";
 
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import { and, desc, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
@@ -20,15 +18,8 @@ function noStore(res: NextResponse) {
   return res;
 }
 
-// Next 14 (sync) + Next 15 (async)
-async function getJar() {
-  const maybe = cookies() as any;
-  return typeof maybe?.then === "function" ? await maybe : maybe;
-}
-
-async function getSid(): Promise<string> {
-  const jar = await getJar();
-  return jar.get?.("sid")?.value ?? jar.get?.("adap_sid")?.value ?? "";
+function getSidFromRequest(req: NextRequest): string {
+  return req.cookies.get("sid")?.value ?? req.cookies.get("adap_sid")?.value ?? "";
 }
 
 function norm(v: unknown) {
@@ -46,8 +37,8 @@ function ensureUrlFromKey(key: string): string {
   return cfUrl(key) ?? key;
 }
 
-async function requireOwnedLine(lineId: string) {
-  const sid = await getSid();
+async function requireOwnedLine(req: NextRequest, lineId: string) {
+  const sid = getSidFromRequest(req);
   if (!sid) return { ok: false as const, status: 401, error: "no_session" };
 
   const cart = await db.query.carts.findFirst({
@@ -69,20 +60,20 @@ async function requireOwnedLine(lineId: string) {
  * GET /api/cart/lines/[lineId]/artwork
  * Returns { ok, attachments: [{ id, storageId, url, fileName, createdAt? }] }
  */
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ lineId: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ lineId: string }> }) {
   try {
     const { lineId } = await ctx.params;
     const lid = norm(lineId);
     if (!lid) return noStore(NextResponse.json({ ok: false, error: "missing_lineId" }, { status: 400 }));
 
-    const owned = await requireOwnedLine(lid);
+    const owned = await requireOwnedLine(req, lid);
     if (!owned.ok) return noStore(NextResponse.json({ ok: false, error: owned.error }, { status: owned.status }));
 
     const rows = await db
       .select()
       .from(cartAttachments)
-      .where(eq(cartAttachments.lineId, lid))
-      .orderBy(desc(cartAttachments.createdAt));
+      .where(eq(cartAttachments.cartLineId, lid)) // ✅ cartLineId
+      .orderBy(desc((cartAttachments as any).createdAt));
 
     const attachments = (rows || []).map((r: any) => ({
       id: String(r.id),
@@ -106,7 +97,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ lineId: st
  * - New:    { key, fileName?, url? }
  * - Legacy: { side, url, key? }   (side ignored server-side)
  *
- * We store: key (storageId), url, fileName
+ * We store: cartLineId, key (storageId), url, fileName
  */
 export async function POST(req: NextRequest, ctx: { params: Promise<{ lineId: string }> }) {
   try {
@@ -114,7 +105,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ lineId: st
     const lid = norm(lineId);
     if (!lid) return noStore(NextResponse.json({ ok: false, error: "missing_lineId" }, { status: 400 }));
 
-    const owned = await requireOwnedLine(lid);
+    const owned = await requireOwnedLine(req, lid);
     if (!owned.ok) return noStore(NextResponse.json({ ok: false, error: owned.error }, { status: owned.status }));
 
     const body = (await req.json().catch(() => ({}))) as {
@@ -122,7 +113,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ lineId: st
       storageId?: string;
       fileName?: string;
       url?: string;
-      side?: number | string;
+      side?: number | string; // ignored
     };
 
     const key = norm(body.storageId ?? body.key);
@@ -140,25 +131,24 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ lineId: st
     const [row] = await db
       .insert(cartAttachments)
       .values({
-        lineId: owned.line.id,
-        productId: Number(owned.line.productId),
-        fileName,
+        cartLineId: owned.line.id, // ✅ correct column
+// sourcery skip: simplify-ternary
+        fileName: fileName ? fileName : undefined, // optional (undefined ok, null not ok)
         key: storageId,
         url: finalUrl,
       })
       .onConflictDoNothing({
-        target: [cartAttachments.lineId, cartAttachments.key],
+        target: [cartAttachments.cartLineId, cartAttachments.key], // ✅ correct conflict target
       })
       .returning({ id: cartAttachments.id });
 
-    // If conflict happened, returning() may be empty; still ok.
     const id = row?.id ? String(row.id) : null;
 
     return noStore(
       NextResponse.json(
         { ok: true, attachment: { id, storageId, url: finalUrl, fileName } },
-        { status: 200 },
-      ),
+        { status: 200 }
+      )
     );
   } catch (err: any) {
     console.error("POST /api/cart/lines/[lineId]/artwork failed:", err);
@@ -178,7 +168,7 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ lineId: 
     const lid = norm(lineId);
     if (!lid) return noStore(NextResponse.json({ ok: false, error: "missing_lineId" }, { status: 400 }));
 
-    const owned = await requireOwnedLine(lid);
+    const owned = await requireOwnedLine(req, lid);
     if (!owned.ok) return noStore(NextResponse.json({ ok: false, error: owned.error }, { status: owned.status }));
 
     const body = (await req.json().catch(() => ({}))) as {
@@ -202,8 +192,8 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ lineId: 
         url: cartAttachments.url,
       })
       .from(cartAttachments)
-      .where(eq(cartAttachments.lineId, lid))
-      .orderBy(desc(cartAttachments.createdAt));
+      .where(eq(cartAttachments.cartLineId, lid)) // ✅ cartLineId
+      .orderBy(desc((cartAttachments as any).createdAt));
 
     const match = candidates.find((a: any) => {
       if (key && String(a.key) === key) return true;

@@ -1,20 +1,28 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { NextRequest, NextResponse } from "next/server";
 import { and, eq, ne } from "drizzle-orm";
+
 import { db } from "@/lib/db";
 import { carts } from "@/lib/db/schema/cart";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
 
-export async function POST() {
+function getSidFromRequest(req: NextRequest): string {
+  return req.cookies.get("sid")?.value ?? req.cookies.get("adap_sid")?.value ?? "";
+}
+
+export async function POST(req: NextRequest) {
   const database = db;
 
   try {
-    const sid = cookies().get("sid")?.value ?? "";
+    const sid = getSidFromRequest(req);
     if (!sid) return json(400, { ok: false, error: "No session/cart." });
 
     const cart = await database.query.carts.findFirst({

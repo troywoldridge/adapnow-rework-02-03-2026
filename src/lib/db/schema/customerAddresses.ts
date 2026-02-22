@@ -1,22 +1,13 @@
 // src/lib/db/schema/customerAddresses.ts
-import {
-  pgTable,
-  uuid,
-  text,
-  boolean,
-  timestamp,
-  integer,
-  jsonb,
-  index,
-  uniqueIndex,
-  customType,
-} from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, boolean, integer, jsonb, timestamp, customType, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
-import { customers } from "./customer";
-
-// citext support (Postgres extension). Treat as string in TS.
-const citext = customType<{ data: string | null; notNull: false }>({
+/**
+ * citext support
+ * DB already uses citext for customer_addresses.email.
+ * This keeps schema aligned so drizzle-kit won't try to create/rename weirdly.
+ */
+const citext = customType<{ data: string | null }>({
   dataType() {
     return "citext";
   },
@@ -25,14 +16,11 @@ const citext = customType<{ data: string | null; notNull: false }>({
 export const customerAddresses = pgTable(
   "customer_addresses",
   {
-    id: uuid("id").primaryKey().defaultRandom().notNull(),
+    id: uuid("id").notNull().primaryKey().default(sql`gen_random_uuid()`),
 
-    customerId: uuid("customer_id")
-      .notNull()
-      .references(() => customers.id, { onDelete: "cascade" }),
+    customerId: uuid("customer_id").notNull(),
 
     label: text("label"),
-
     firstName: text("first_name"),
     lastName: text("last_name"),
     company: text("company"),
@@ -60,19 +48,10 @@ export const customerAddresses = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
-  (t) => [
-    index("idx_customer_addresses_customer").on(t.customerId),
-    index("idx_customer_addresses_created_at").on(t.createdAt),
-
-    uniqueIndex("uniq_customer_addresses_default_shipping")
-      .on(t.customerId)
-      .where(sql`is_default_shipping = true and deleted_at is null`),
-
-    uniqueIndex("uniq_customer_addresses_default_billing")
-      .on(t.customerId)
-      .where(sql`is_default_billing = true and deleted_at is null`),
-  ],
+  (t) => ({
+    idxCustomerAddressesCreatedAt: index("idx_customer_addresses_created_at").on(t.createdAt),
+    idxCustomerAddressesCustomer: index("idx_customer_addresses_customer").on(t.customerId),
+    // NOTE: your DB also has partial unique indexes for default billing/shipping.
+    // Those are usually created via SQL migrations (Drizzle can model them, but partial uniques are best handled in migrations).
+  }),
 );
-
-export type CustomerAddressRow = typeof customerAddresses.$inferSelect;
-export type CustomerAddressInsert = typeof customerAddresses.$inferInsert;
