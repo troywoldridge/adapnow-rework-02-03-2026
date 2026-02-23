@@ -271,8 +271,17 @@ async function loadOrder(orderIdRaw: string) {
 }
 
 /* ------------------------------ page ------------------------------ */
-export default async function OrderDetailsPage({ params }: { params: { id: string } }) {
-  const data = await loadOrder(params.id);
+export default async function OrderDetailsPage({
+  params,
+}: {
+  // Your build's PageProps constraint expects Promise-like params.
+  params: Promise<{ id: string }>;
+}) {
+  const resolvedParams = await (params as unknown as Promise<{ id: string }>);
+  const orderId = cleanId(resolvedParams?.id);
+  if (!orderId) notFound();
+
+  const data = await loadOrder(orderId);
   if (!data) notFound();
 
   const { o, lines, artMap } = data;

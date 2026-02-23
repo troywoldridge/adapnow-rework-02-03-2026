@@ -51,7 +51,9 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-async function loadProductMeta(productIds: number[]): Promise<Record<number, { name?: string | null; sku?: string | null }>> {
+async function loadProductMeta(
+  productIds: number[]
+): Promise<Record<number, { name?: string | null; sku?: string | null }>> {
   const ids = Array.from(new Set(productIds.filter((n) => Number.isFinite(n) && n > 0)));
   if (!ids.length) return {};
 
@@ -138,8 +140,14 @@ async function load(orderIdRaw: string) {
   return { orderId, currency, lines: editorLines, productMeta };
 }
 
-export default async function Page({ params }: { params: { id: string } }) {
-  const data = await load(params.id);
+export default async function Page({
+  params,
+}: {
+  // Your build's PageProps constraint expects Promise-like params.
+  params: Promise<{ id: string }>;
+}) {
+  const resolvedParams = await (params as unknown as Promise<{ id: string }>);
+  const data = await load(resolvedParams.id);
   if (!data) notFound();
   return <ReorderEditor {...data} />;
 }

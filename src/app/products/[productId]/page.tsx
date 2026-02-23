@@ -188,9 +188,10 @@ function toBuyBoxGroups(groups: any[]): BuyBoxOptionGroup[] {
 export async function generateMetadata({
   params,
 }: {
-  params: { productId: string };
+  params: Promise<{ productId: string }>;
 }): Promise<Metadata> {
-  const { productId } = params;
+  const { productId } = await params;
+
 
   const cats = categoryAssets as Category[];
   const subs = subcategoryAssets as Subcategory[];
@@ -287,10 +288,9 @@ openGraph: {
 export default async function ProductPage({
   params,
 }: {
-  params: { productId: string };
+  params: Promise<{ productId: string }>;
 }) {
-  const { productId } = params;
-
+  const { productId } = await params;
   const cats = categoryAssets as Category[];
   const subs = subcategoryAssets as Subcategory[];
   const prods = productAssets as ProductRow[];

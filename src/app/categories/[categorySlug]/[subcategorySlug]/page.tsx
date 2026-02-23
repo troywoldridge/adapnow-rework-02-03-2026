@@ -144,9 +144,9 @@ function buildPath(categorySlug: string, subcategorySlug: string) {
 export async function generateMetadata({
   params,
 }: {
-  params: { categorySlug: string; subcategorySlug: string };
+  params: Promise<{ categorySlug: string; subcategorySlug: string }>;
 }): Promise<Metadata> {
-  const { categorySlug, subcategorySlug } = params;
+  const { categorySlug, subcategorySlug } = await params;
 
   const cats = categoryAssets as Category[];
   const subs = subcategoryAssets as Subcategory[];
@@ -215,9 +215,9 @@ export async function generateMetadata({
 export default async function SubcategoryPage({
   params,
 }: {
-  params: { categorySlug: string; subcategorySlug: string };
+  params: Promise<{ categorySlug: string; subcategorySlug: string }>;
 }) {
-  const { categorySlug, subcategorySlug } = params;
+  const { categorySlug, subcategorySlug } = await params;
 
   const cats = categoryAssets as Category[];
   const subs = subcategoryAssets as Subcategory[];

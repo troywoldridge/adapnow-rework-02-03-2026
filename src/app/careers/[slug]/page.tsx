@@ -1,3 +1,4 @@
+// src/app/careers/[slug]/page.tsx
 import "server-only";
 
 import type { Metadata } from "next";
@@ -14,9 +15,11 @@ export async function generateStaticParams() {
 export async function generateMetadata({
   params,
 }: {
-  params: Params;
+  params: Promise<Params>;
 }): Promise<Metadata> {
-  const job = JOBS.find((j) => j.slug === params.slug);
+  const { slug } = await params;
+
+  const job = JOBS.find((j) => j.slug === slug);
 
   if (!job) {
     return {
@@ -48,8 +51,10 @@ function mailtoForJob(job: (typeof JOBS)[number]) {
   return `mailto:${to}?subject=${encodeURIComponent(subject)}`;
 }
 
-export default function JobDetailPage({ params }: { params: Params }) {
-  const job = JOBS.find((j) => j.slug === params.slug);
+export default async function JobDetailPage({ params }: { params: Promise<Params> }) {
+  const { slug } = await params;
+
+  const job = JOBS.find((j) => j.slug === slug);
 
   if (!job) {
     return (

@@ -66,6 +66,7 @@ async function loadOrderOrNull(orderIdRaw: string): Promise<OrderRow | null> {
 
   const { userId } = await auth();
 
+  // In some Next builds, cookies() is Promise<ReadonlyRequestCookies>
   const jar = await cookies();
   const sid = jar.get("adap_sid")?.value ?? jar.get("sid")?.value ?? null;
 
@@ -94,8 +95,21 @@ async function loadOrderOrNull(orderIdRaw: string): Promise<OrderRow | null> {
 }
 
 /* ------------------------------ page ------------------------------ */
-export default async function InvoicePage({ params }: { params: { id: string } }) {
-  const orderId = cleanId(params?.id);
+export default async function InvoicePage({
+  params,
+}: {
+  /**
+   * IMPORTANT:
+   * Your build's PageProps constraint expects params to be Promise-like:
+   *   params?: Promise<any>
+   * So do NOT union with `{ id: string }` here.
+   */
+  params: Promise<{ id: string }>;
+}) {
+  // Works whether Next passes a Promise OR (at runtime) a plain object,
+  // but we type it as Promise-only to satisfy the build constraint.
+  const resolvedParams = await (params as unknown as Promise<{ id: string }>);
+  const orderId = cleanId(resolvedParams?.id);
   if (!orderId) notFound();
 
   const o = await loadOrderOrNull(orderId);
@@ -113,8 +127,7 @@ export default async function InvoicePage({ params }: { params: { id: string } }
   const credits = Number((o as any).creditsCents ?? 0);
   const total = Number((o as any).totalCents) || 0;
 
-  // ✅ This is the PDF endpoint this page expects.
-  // If your API route differs, tell me and I’ll adjust.
+  // PDF endpoint this page expects
   const pdfPath = `/api/orders/${encodeURIComponent(orderId)}/invoice`;
   const pdfEmbedUrl = `${pdfPath}#view=FitH&toolbar=1&navpanes=0`;
   const headerTitle = orderNumber ? `Invoice — Order #${orderNumber}` : `Invoice — Order ${orderId.slice(0, 8)}`;
@@ -159,7 +172,11 @@ export default async function InvoicePage({ params }: { params: { id: string } }
               Open in new tab
             </a>
 
-            <form action={`/account/orders/${encodeURIComponent(orderId)}/invoice/email`} method="post" className="print:hidden">
+            <form
+              action={`/account/orders/${encodeURIComponent(orderId)}/invoice/email`}
+              method="post"
+              className="print:hidden"
+            >
               <button
                 type="submit"
                 className="inline-flex items-center rounded-xl bg-white px-4 py-2 text-sm font-semibold text-gray-800 ring-1 ring-inset ring-gray-200 hover:bg-gray-50"
@@ -211,11 +228,7 @@ export default async function InvoicePage({ params }: { params: { id: string } }
         </div>
 
         <div className="h-[80vh] w-full">
-          <iframe
-            title="Invoice PDF"
-            src={pdfEmbedUrl}
-            className="h-full w-full"
-          />
+          <iframe title="Invoice PDF" src={pdfEmbedUrl} className="h-full w-full" />
         </div>
       </section>
 

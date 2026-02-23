@@ -213,7 +213,7 @@ function drawInvoice(doc: any, args: { requestId: string; order: any }) {
         ? unitCents * qtySafe
         : 0;
 
-    const {y} = doc;
+    const { y } = doc;
     doc.text(name, col1, y, { width: 290 });
     doc.text(String(qtySafe), col2, y, { width: 80, align: "right" });
     doc.text(money(totalCents, currency), col3, y, { width: 120, align: "right" });
@@ -269,12 +269,15 @@ function drawInvoice(doc: any, args: { requestId: string; order: any }) {
   doc.fontSize(9).fillColor("#666").text("If you have any questions, contact support.", { align: "left" });
 }
 
-export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> | { id: string } }) {
+export async function GET(
+  req: NextRequest,
+  ctx: { params: Promise<{ id: string }> }
+) {
   const requestId = getRequestId(req);
 
   try {
-    const params = await Promise.resolve(ctx.params as any);
-    const parsed = ParamsSchema.safeParse(params);
+    const rawParams = await ctx.params;
+    const parsed = ParamsSchema.safeParse(rawParams);
 
     if (!parsed.success) {
       return jsonError(requestId, 400, "Invalid order id");

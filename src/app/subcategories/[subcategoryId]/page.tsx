@@ -5,10 +5,7 @@ import type { Metadata } from "next";
 import Image from "@/components/ImageSafe";
 import ProductGrid from "@/components/ProductGrid";
 import { mergeProduct, mergeSubcategory } from "@/lib/mergeUtils";
-import {
-  getProductsBySubcategory,
-  getSubcategoryDetails,
-} from "@/lib/sinalite.server";
+import { getProductsBySubcategory, getSubcategoryDetails } from "@/lib/sinalite.server";
 
 function readEnv(key: string): string | null {
   const v = process.env[key];
@@ -52,11 +49,7 @@ function getCfImagesAccountHash(): string | null {
 }
 
 function getCfOgVariant(): string {
-  return (
-    readEnv("NEXT_PUBLIC_CF_OG_IMAGE_VARIANT") ||
-    readEnv("CF_OG_IMAGE_VARIANT") ||
-    "socialShare"
-  );
+  return readEnv("NEXT_PUBLIC_CF_OG_IMAGE_VARIANT") || readEnv("CF_OG_IMAGE_VARIANT") || "socialShare";
 }
 
 function buildCfImagesUrl(imageId: string | null | undefined): string | null {
@@ -107,47 +100,39 @@ type StorefrontProduct = {
 
 function getStoreCode(): string | undefined {
   // Prefer server-only env (safer), fall back to NEXT_PUBLIC for compatibility.
-  return (
-    readEnv("STORE_CODE") ||
-    readEnv("SINALITE_STORE_CODE") ||
-    readEnv("NEXT_PUBLIC_STORE_CODE") ||
-    undefined
-  );
+  return readEnv("STORE_CODE") || readEnv("SINALITE_STORE_CODE") || readEnv("NEXT_PUBLIC_STORE_CODE") || undefined;
 }
 
 /* ----------------------------- SEO ----------------------------- */
 export async function generateMetadata({
   params,
 }: {
-  params: { subcategoryId: string };
+  params: Promise<{ subcategoryId: string }>;
 }): Promise<Metadata> {
-  const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, `/subcategories/${params.subcategoryId}`);
+  const { subcategoryId } = await params;
 
-  const subId = toInt(params.subcategoryId);
+  const baseUrl = getSiteBaseUrl();
+  const canonical = joinUrl(baseUrl, `/subcategories/${subcategoryId}`);
+
+  const subId = toInt(subcategoryId);
   const storeCode = getStoreCode();
 
   const subFromMerge =
     subId !== null
       ? (mergeSubcategory({ id: subId }) as any)
-      : (mergeSubcategory({ slug: params.subcategoryId }) as any);
+      : (mergeSubcategory({ slug: subcategoryId }) as any);
 
   // Fetch SinaLite details (authoritative text) when ID numeric
-  const fromSina =
-    subId !== null ? await getSubcategoryDetails(subId, storeCode) : undefined;
+  const fromSina = subId !== null ? await getSubcategoryDetails(subId, storeCode) : undefined;
 
   const name = subFromMerge?.name ?? fromSina?.name;
   const descriptionRaw = subFromMerge?.description ?? fromSina?.description ?? "";
-  const description =
-    (descriptionRaw || "").trim() || "Shop our print product lineup by subcategory.";
+  const description = (descriptionRaw || "").trim() || "Shop our print product lineup by subcategory.";
 
   const imageRaw = subFromMerge?.image ?? fromSina?.image;
-  const pageImage =
-    safeAbsoluteUrlMaybe(imageRaw, baseUrl) || getDefaultShareImageUrl(baseUrl);
+  const pageImage = safeAbsoluteUrlMaybe(imageRaw, baseUrl) || getDefaultShareImageUrl(baseUrl);
 
-  const title = name
-    ? `${name} | Shop Print Products`
-    : "Shop Print Products | American Design And Printing";
+  const title = name ? `${name} | Shop Print Products` : "Shop Print Products | American Design And Printing";
 
   return {
     metadataBase: new URL(baseUrl),
@@ -186,12 +171,14 @@ export async function generateMetadata({
 export default async function SubcategoryProductsPage({
   params,
 }: {
-  params: { subcategoryId: string };
+  params: Promise<{ subcategoryId: string }>;
 }) {
-  const baseUrl = getSiteBaseUrl();
-  const canonical = joinUrl(baseUrl, `/subcategories/${params.subcategoryId}`);
+  const { subcategoryId } = await params;
 
-  const subId = toInt(params.subcategoryId);
+  const baseUrl = getSiteBaseUrl();
+  const canonical = joinUrl(baseUrl, `/subcategories/${subcategoryId}`);
+
+  const subId = toInt(subcategoryId);
   const storeCode = getStoreCode();
 
   if (subId === null) {
@@ -231,9 +218,7 @@ export default async function SubcategoryProductsPage({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         <h1 className="text-xl font-bold text-red-600">Invalid subcategory</h1>
-        <p className="mt-2 text-neutral-700">
-          We couldn’t recognize that subcategory.
-        </p>
+        <p className="mt-2 text-neutral-700">We couldn’t recognize that subcategory.</p>
       </main>
     );
   }
@@ -248,14 +233,10 @@ export default async function SubcategoryProductsPage({
   const subImage = safeAbsoluteUrlMaybe(subImageRaw, baseUrl);
 
   // Products from SinaLite, then merged for local image ids/attrs if any
-  const rawProducts = (await getProductsBySubcategory(
-    subId,
-    storeCode
-  )) as StorefrontProduct[];
+  const rawProducts = (await getProductsBySubcategory(subId, storeCode)) as StorefrontProduct[];
 
   const products = rawProducts.map((apiProd: StorefrontProduct) => {
-    const idNum =
-      typeof apiProd.id === "string" ? Number(apiProd.id) : Number(apiProd.id);
+    const idNum = typeof apiProd.id === "string" ? Number(apiProd.id) : Number(apiProd.id);
 
     const safeProd = {
       ...apiProd,
@@ -342,9 +323,7 @@ export default async function SubcategoryProductsPage({
         )}
 
         <h1 className="mt-4 text-3xl font-semibold tracking-tight">{subName}</h1>
-        {!!subDesc && (
-          <p className="mt-2 max-w-3xl text-sm text-neutral-700">{subDesc}</p>
-        )}
+        {!!subDesc && <p className="mt-2 max-w-3xl text-sm text-neutral-700">{subDesc}</p>}
       </section>
 
       <ProductGrid products={products as any[]} />
